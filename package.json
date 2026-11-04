@@ -1,0 +1,85 @@
+{
+  "name": "forge",
+  "version": "0.1.0",
+  "description": "Opinionated idea-to-merge-request harness with human gates",
+  "scripts": {
+    "forge": "node --import tsx src/cli/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test \"test/**/*.test.ts\" \"test/**/*.test.tsx\"",
+    "check": "npm run typecheck && npm test",
+    "demo": "bash scripts/demo.sh",
+    "desktop:dev": "electron-vite dev",
+    "desktop:build": "electron-vite build",
+    "desktop:start": "electron-vite preview",
+    "desktop:package": "electron-vite build && electron-builder --dir"
+  },
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.317",
+    "dompurify": "^3.4.17",
+    "ink": "^8.0.0",
+    "marked": "^18.1.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tsx": "^4.23.15",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "electron": "^43.8.2",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
+    "ink-testing-library": "^4.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  },
+  "private": true,
+  "bin": {
+    "forge": "./bin/forge.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "main": "out/main/index.js",
+  "build": {
+    "appId": "dev.forge.desktop",
+    "productName": "Forge",
+    "directories": {
+      "output": "dist-desktop"
+    },
+    "files": [
+      "out/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/@anthropic-ai/**"
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JuanGiraldo0212/forge.git"
+  }
+}

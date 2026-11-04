@@ -1,0 +1,293 @@
+/**
+ * IPC handlers: the main-process side of ForgeApi. Every argument from the renderer is validated here;
+ * the renderer is treated as untrusted (it renders agent-written text).
+ */
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { z } from 'zod';
+import { readConfigFile, readLocalConfigFile, writeConfigFiles } from '../../adapters/fs.ts';
+import { applyRepoEdits, readRepoEdits, type RepoEdit } from '../../application/configEdit.ts';
+import { expand, findRepoRoot } from '../../cli/compose.ts';
+import { initWorkspaceFiles } from '../../cli/init.ts';
+import { inspectFolder } from './inspect.ts';
+import { changeDiff } from '../../application/build.ts';
+import { changeIssues } from '../../application/changes.ts';
+import { loadEpic } from '../../application/deps.ts';
+import { describeEvent } from '../../application/render.ts';
+import { gateIssues } from '../../application/stages.ts';
+import { changeFile, type GatedStage } from '../../domain/epic.ts';
+import {
+  abandonAction,
+  approveAction,
+  approveAllAction,
+  assignAction,
+  createEpicAction,
+  dropAction,
+  loadAll,
+  reviseAction,
+  runAction,
+  sendBackAction,
+  syncAction,
+  type Outcome,
+} from '../../ui/actions.ts';
+import type { DocName, DocView, Method, RepoSettings, WorkspaceInfo } from '../shared/api.ts';
+import type { Session } from './session.ts';
+import type { Settings } from './settings.ts';
+
+export type HandlerContext = {
+  readonly session: () => Session | undefined;
+  /** Opens (or reopens) a workspace and makes it current. */
+  readonly open: (root: string) => Promise<{ readonly workspace: WorkspaceInfo | null; readonly error?: string }>;
+  readonly chooseFolder: () => Promise<string | undefined>;
+  readonly openExternal: (url: string) => Promise<void>;
+  readonly settings: Settings;
+};
+
+const slug = z.string().regex(/^[a-z0-9-]{1,64}$/);
+const changeId = z.string().regex(/^[A-Za-z0-9_-]{1,32}$/);
+const text = z.string().max(20_000);
+const doc = z.enum(['idea.md', 'exploration.md', 'epic-spec.md']);
+
+const repoEdit = z.object({
+  name: z.string().max(64),
+  path: z.string().max(4096),
+  localPath: z.string().max(4096),
+  project: z.string().max(512),
+  baseBranch: z.string().max(256),
+  remote: z.string().max(256),
+  setup: z.array(z.string().max(2000)).max(20),
+  checks: z.array(z.object({ name: z.string().max(64), run: z.string().max(2000) })).max(20),
+  revertCheck: z.string().max(64),
+});
+
+const ARGS = {
+  workspace: z.tuple([]),
+  chooseWorkspace: z.tuple([]),
+  openWorkspace: z.tuple([z.string().min(1).max(4096)]),
+  recentWorkspaces: z.tuple([]),
+  listEpics: z.tuple([]),
+  readDoc: z.tuple([slug, doc]),
+  readChangeSpec: z.tuple([slug, changeId]),
+  writeDoc: z.tuple([slug, doc, z.string().max(500_000)]),
+  writeChangeSpec: z.tuple([slug, changeId, z.string().max(500_000)]),
+  diff: z.tuple([slug, changeId]),
+  history: z.tuple([slug]),
+  createEpic: z.tuple([z.string().trim().min(1).max(200), text]),
+  run: z.tuple([slug, z.boolean()]),
+  stop: z.tuple([slug]),
+  approve: z.tuple([slug, changeId.nullable(), text]),
+  approveAll: z.tuple([slug, text]),
+  revise: z.tuple([slug, changeId.nullable(), text.min(1)]),
+  sendBack: z.tuple([slug, z.enum(['explore', 'spec']), text.min(1)]),
+  drop: z.tuple([slug, changeId, text.min(1)]),
+  assign: z.tuple([slug, z.string().trim().min(1).max(200)]),
+  abandon: z.tuple([slug, text.min(1)]),
+  sync: z.tuple([slug]),
+  repoSettings: z.tuple([]),
+  inspectRepo: z.tuple([z.string().max(4096).nullable(), z.string().max(4096).nullable()]),
+  saveRepos: z.tuple([z.array(repoEdit).max(50), z.string().max(4096).nullable()]),
+  chooseNewWorkspace: z.tuple([]),
+  setGitlabToken: z.tuple([z.string().trim().min(1).max(1000).nullable()]),
+  openExternal: z.tuple([z.string().max(2048).regex(/^https?:\/\//i, 'only http(s) links')]),
+  busy: z.tuple([]),
+} satisfies Record<Method, z.ZodTuple>;
+
+
+const STAGE_OF: Readonly<Partial<Record<DocName, GatedStage>>> = { 'exploration.md': 'explore', 'epic-spec.md': 'spec' };
+
+const noWorkspace: Outcome = { ok: false, text: 'Open a workspace first.', tone: 'error' };
+
+export const createHandlers = (ctx: HandlerContext) => {
+  const session = () => ctx.session();
+  const deps = () => session()?.deps;
+
+  /** Mutations on one epic run exclusively: never two actions on the same epic at once. */
+  const exclusive = async (s: string, work: Parameters<Session['exclusive']>[1]): Promise<Outcome> => {
+    const sess = session();
+    if (!sess) return noWorkspace;
+    const r = await sess.exclusive(s, work);
+    return r.ok ? (r.value as Outcome) : { ok: false, text: r.error, tone: 'error' };
+  };
+
+  const editable = (s: string): boolean => !session()?.busy().includes(s);
+
+  const impl: { readonly [M in Method]: (...args: z.infer<(typeof ARGS)[M]>) => Promise<unknown> } = {
+    workspace: async () => session()?.info ?? null,
+    chooseWorkspace: async () => {
+      const folder = await ctx.chooseFolder();
+      return folder ? ctx.open(folder) : { workspace: session()?.info ?? null };
+    },
+    openWorkspace: (root) => ctx.open(root),
+    recentWorkspaces: () => ctx.settings.recent(),
+
+    listEpics: async () => {
+      const d = deps();
+      return d ? loadAll(d) : [];
+    },
+    readDoc: async (s, name): Promise<DocView> => {
+      const d = deps();
+      if (!d) return { path: '', content: undefined, issues: [], editable: false, snapshot: false };
+      const epic = await loadEpic(d, s);
+      const stage = STAGE_OF[name];
+      const content = await d.artifacts.read(s, name);
+      const atGate = epic.ok && stage === epic.value.stage && epic.value.status === 'awaiting_approval';
+      return {
+        path: d.artifacts.pathOf(s, name),
+        content,
+        issues: atGate && stage && content !== undefined ? await gateIssues(d, s, stage) : [],
+        editable: editable(s),
+        snapshot: false,
+      };
+    },
+    readChangeSpec: async (s, id): Promise<DocView> => {
+      const d = deps();
+      const epic = d ? await loadEpic(d, s) : undefined;
+      const change = epic?.ok ? epic.value.changes.find((c) => c.id === id) : undefined;
+      if (!d || !epic?.ok || !change) return { path: '', content: undefined, issues: [], editable: false, snapshot: false };
+      const path = d.artifacts.pathOf(s, changeFile(id));
+      if (change.spec) return { path, content: change.spec.markdown, issues: [], editable: false, snapshot: true };
+      return {
+        path,
+        content: await d.artifacts.read(s, changeFile(id)),
+        issues: change.status === 'draft' ? await changeIssues(d, epic.value, id) : [],
+        editable: change.status === 'draft' && editable(s),
+        snapshot: false,
+      };
+    },
+    writeDoc: async (s, name, content) => {
+      const d = deps();
+      if (!d) return noWorkspace;
+      if (!editable(s)) return { ok: false, text: `"${s}" is running; wait for it before editing.`, tone: 'error' };
+      if (!(await loadEpic(d, s)).ok) return { ok: false, text: `No epic "${s}".`, tone: 'error' };
+      await d.artifacts.write(s, name, content);
+      return { ok: true, text: `Saved ${name}.`, tone: 'success' };
+    },
+    writeChangeSpec: async (s, id, content) => {
+      const view = (await impl.readChangeSpec(s, id)) as DocView;
+      if (!view.editable) return { ok: false, text: `${id} is not an editable draft.`, tone: 'error' };
+      await deps()!.artifacts.write(s, changeFile(id), content);
+      return { ok: true, text: `Saved ${id}.`, tone: 'success' };
+    },
+    diff: async (s, id) => {
+      const d = deps();
+      if (!d) return '';
+      const r = await changeDiff(d, s, id);
+      return r.ok ? r.value : r.error.message;
+    },
+    history: async (s) => {
+      const d = deps();
+      return d ? (await d.epics.load(s)).map((e) => ({ at: e.at, by: e.by, text: describeEvent(e) })) : [];
+    },
+
+    createEpic: async (title, idea) => {
+      const d = deps();
+      return d ? createEpicAction(d, title, idea) : noWorkspace;
+    },
+    run: (s, force) => exclusive(s, (d) => runAction(d, s, force)),
+    stop: async (s) => session()?.stop(s),
+    // Approving code pushes and opens an MR, so it runs exclusively like a run.
+    approve: (s, id, note) => exclusive(s, (d) => approveAction(d, s, id ?? undefined, note)),
+    approveAll: (s, note) => exclusive(s, (d) => approveAllAction(d, s, note)),
+    revise: (s, id, note) => exclusive(s, (d) => reviseAction(d, s, id ?? undefined, note)),
+    sendBack: (s, to, note) => exclusive(s, (d) => sendBackAction(d, s, to, note)),
+    drop: (s, id, note) => exclusive(s, (d) => dropAction(d, s, id, note)),
+    assign: (s, owner) => exclusive(s, (d) => assignAction(d, s, owner)),
+    abandon: (s, note) => exclusive(s, (d) => abandonAction(d, s, note)),
+    sync: (s) => exclusive(s, (d) => syncAction(d, s)),
+
+    repoSettings: async (): Promise<RepoSettings | null> => {
+      const sess = session();
+      if (!sess) return null;
+      const root = sess.info.root;
+      const edits = readRepoEdits(await readConfigFile(root), await readLocalConfigFile(root));
+      const epics = await loadAll(sess.deps);
+      return {
+        root,
+        gitlabBaseUrl: sess.deps.config.gitlab.baseUrl,
+        repos: edits.map((e) => {
+          const resolved = expand(root, e.localPath || e.path);
+          return {
+            ...e,
+            resolved,
+            present: existsSync(join(resolved, '.git')),
+            inUse: epics.flatMap((ep) =>
+              ep.changes.filter((c) => c.spec?.repo === e.name && c.status !== 'merged' && c.status !== 'dropped').map((c) => `${ep.slug}/${c.id}`),
+            ),
+          };
+        }),
+      };
+    },
+    inspectRepo: async (path, workspaceRoot) => {
+      const folder = path ?? (await ctx.chooseFolder());
+      if (!folder) return null;
+      const root = workspaceRoot ?? session()?.info.root;
+      if (!root) return null;
+      return inspectFolder(folder, root, session()?.deps.config.gitlab.baseUrl ?? 'https://gitlab.com');
+    },
+    saveRepos: async (repos, newWorkspaceRoot) => {
+      const sess = session();
+      const root = newWorkspaceRoot ?? sess?.info.root;
+      if (!root) return noWorkspace;
+      const creating = newWorkspaceRoot !== null;
+      const configText = await readConfigFile(root);
+      if (creating && configText !== undefined) return { ok: false, text: `${root} already has .forge/config.yaml; open it instead.`, tone: 'error' };
+      if (!creating && sess?.busy().length) return { ok: false, text: 'Agents are running. Change repositories when they finish.', tone: 'error' };
+
+      if (!creating && sess) {
+        const kept = new Set(repos.map((r) => r.name));
+        const blocked = (await loadAll(sess.deps)).flatMap((ep) =>
+          ep.changes.filter((c) => c.spec && !kept.has(c.spec.repo) && c.status !== 'merged' && c.status !== 'dropped').map((c) => `${ep.slug}/${c.id} (${c.spec!.repo})`),
+        );
+        if (blocked.length) return { ok: false, text: `Can't remove a repo with unfinished changes: ${blocked.join(', ')}. Finish or drop them first.`, tone: 'error' };
+      }
+
+      const files = applyRepoEdits(configText, await readLocalConfigFile(root), repos as readonly RepoEdit[]);
+      if (!files.ok) return { ok: false, text: files.error.join(' · '), tone: 'error' };
+      if (creating) await initWorkspaceFiles(root, files.value.config);
+      await writeConfigFiles(root, files.value);
+      const opened = await ctx.open(root);
+      if (opened.error) return { ok: false, text: opened.error, tone: 'error' };
+      const missing = opened.workspace?.repos.filter((r) => !r.present).map((r) => r.name) ?? [];
+      return {
+        ok: true,
+        text: `${creating ? `Created the workspace in ${root}. Commit .forge/ and AGENTS.md so the team shares it.` : 'Saved repositories.'}${missing.length ? ` No clone found for: ${missing.join(', ')}.` : ''}`,
+        tone: missing.length ? 'info' : 'success',
+      };
+    },
+    chooseNewWorkspace: async () => {
+      const folder = await ctx.chooseFolder();
+      if (!folder) return { root: null };
+      const root = await findRepoRoot(folder);
+      if (!root.ok) return { root: null, error: 'Pick a git repository (your planning repo). Create one with "git init" first.' };
+      if ((await readConfigFile(root.value)) !== undefined) return { root: null, error: `${root.value} is already a forge workspace. Open it instead.` };
+      return { root: root.value };
+    },
+
+    setGitlabToken: async (token) => {
+      const sess = session();
+      if (!sess) return noWorkspace;
+      const env = sess.info.tokenEnv;
+      const saved = await ctx.settings.setToken(env, token);
+      if (!saved.ok) return { ok: false, text: saved.error, tone: 'error' };
+      if (token) process.env[env] = token;
+      else delete process.env[env];
+      // The GitLab adapter reads the token when the workspace is composed; reopen to pick it up.
+      await ctx.open(sess.info.root);
+      return { ok: true, text: token ? 'GitLab token saved in the OS keychain.' : 'GitLab token removed.', tone: 'success' };
+    },
+    openExternal: async (url) => {
+      // Only web links (MR URLs). Never file:, javascript: or custom schemes.
+      if (/^https?:\/\//i.test(url)) await ctx.openExternal(url);
+    },
+    busy: async () => session()?.busy() ?? [],
+  };
+
+  /** Validates raw IPC arguments, then dispatches. */
+  const dispatch = async (method: Method, args: readonly unknown[]): Promise<unknown> => {
+    const parsed = ARGS[method].safeParse(args);
+    if (!parsed.success) throw new Error(`Invalid arguments for ${method}: ${parsed.error.issues.map((i) => i.message).join('; ')}`);
+    return (impl[method] as (...a: unknown[]) => Promise<unknown>)(...(parsed.data as unknown[]));
+  };
+
+  return { dispatch, impl };
+};
