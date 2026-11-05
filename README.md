@@ -142,9 +142,11 @@ or save it under ⚙ Settings; only forge sees it, never the agents.
 
 ## Desktop app
 
-An Electron app with the same flow. You get an epic list, the stage stepper, a change list with
-repo chips, rendered and editable documents, review findings, a colored diff, history, and live
-agent activity with a **Stop** button.
+An Electron app with the same flow. You get an epic list and a stage stepper that doubles as navigation:
+each stage shows only its own documents (requirements: idea, questions, requirements; epic spec:
+questions, epic spec; changes: the change list with repo chips, each change's spec, review findings and
+colored diff), and you can click back to a finished stage to read it. History is available in every
+stage. While agents run, the epic header shows a **Stop** button.
 
 ```bash
 npm start                             # build and open (last workspace, or the welcome screen)
@@ -251,7 +253,7 @@ running total, so forge records only what each run added.
   - an XSS probe stays inert: no script ran, and the `onerror` and `javascript:` link were stripped;
   - the page has no access to Node or IPC;
   - approving code with no GitLab token fails cleanly;
-  - a live agent run streams its tool calls, and Stop ends it.
+  - a live agent run can be stopped with Stop.
 - Live run on the demo workspace (before the requirements/RFC split): explore, epic spec and change specs (C1 api, C2 web depending on
   C1) with real agents. C1 was built in a sandboxed api worktree, passed its checks and the revert
   test, was reviewed, and stopped for code review, for about $0.95.

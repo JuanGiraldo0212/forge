@@ -13,7 +13,7 @@ import { createHandlers } from '../src/desktop/main/handlers.ts';
 import type { Session } from '../src/desktop/main/session.ts';
 import { fileSettings, type Keychain } from '../src/desktop/main/settings.ts';
 import { mergePaths } from '../src/desktop/main/shellEnv.ts';
-import { changeActions, currentTab, epicActions, initialState, reducer, runWouldDoSomething, stepState } from '../src/desktop/renderer/model.ts';
+import { changeActions, currentTab, currentView, epicActions, initialState, reducer, runWouldDoSomething, stepState, tabsFor } from '../src/desktop/renderer/model.ts';
 import type { Outcome } from '../src/ui/actions.ts';
 import { EPIC_SPEC, makeDeps, makeRepo, REQUIREMENTS, scriptedAgent, sh, stageOf, tempDir } from './helpers.ts';
 
@@ -77,6 +77,37 @@ describe('desktop view model', () => {
     assert.equal(currentTab(s), 'review');
     const draft = reducer(s, { type: 'select-change', changeId: 'C3' });
     assert.equal(currentTab(draft), 'change');
+  });
+
+  it("shows only the current stage's documents, and lets you go back to finished stages", () => {
+    const req = epic({ status: 'awaiting_approval', revision: 1 });
+    assert.deepEqual(tabsFor(req, 'requirements', undefined), ['idea', 'requirements', 'history']);
+    const changes = epic({ stage: 'changes', changes: [change('C1', 'draft')] });
+    let s = reducer(initialState, { type: 'epics', epics: [changes] });
+    assert.equal(currentView(s), 'changes');
+    assert.deepEqual(tabsFor(changes, 'changes', changes.changes[0]), ['change', 'review', 'history'], 'no idea, requirements or epic spec tabs');
+
+    s = reducer(s, { type: 'view', view: 'requirements' });
+    assert.equal(currentView(s), 'requirements');
+    assert.equal(currentTab(s), 'requirements');
+    s = reducer(s, { type: 'tab', tab: 'change' });
+    assert.equal(currentTab(s), 'requirements', 'a tab from another stage falls back to the default');
+
+    const early = reducer(initialState, { type: 'epics', epics: [req] });
+    assert.equal(currentView(reducer(early, { type: 'view', view: 'changes' })), 'requirements', 'stages not reached yet stay closed');
+    const viewing = reducer(reducer(early, { type: 'view', view: 'requirements' }), { type: 'tab', tab: 'idea' });
+    const advanced = reducer(viewing, { type: 'epics', epics: [{ ...req, stage: 'spec', status: 'ready' }] });
+    assert.equal(currentView(advanced), 'spec', 'a new stage brings its own documents');
+    assert.equal(currentTab(advanced), 'spec');
+  });
+
+  it('opens the questions of the stage that asked them', () => {
+    const q = { id: 'Q1', text: 't', why: 'w', options: [], round: 1 };
+    const e = epic({ stage: 'spec', status: 'awaiting_answers', dialog: { stage: 'spec', rounds: 1, delivered: 0, questions: [q] } });
+    const s = reducer(initialState, { type: 'epics', epics: [e] });
+    assert.equal(currentTab(s), 'questions');
+    assert.deepEqual(tabsFor(e, 'spec', undefined), ['questions', 'spec', 'history']);
+    assert.deepEqual(tabsFor(e, 'requirements', undefined), ['idea', 'requirements', 'history'], 'past stage: its dialog is gone');
   });
 });
 

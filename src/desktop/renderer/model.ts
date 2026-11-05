@@ -1,8 +1,8 @@
 /**
  * Renderer view model: pure state, reducer and "what can I do here" rules. No React, no DOM, no IPC.
  */
-import { needsHuman, stageIndex, type ChangeState, type Epic, type Stage } from '../../domain/epic.ts';
-import type { ActivityLine, Outcome, WorkspaceInfo } from '../shared/api.ts';
+import { DOC_STAGES, needsHuman, stageIndex, type ChangeState, type DocStage, type Epic, type Stage } from '../../domain/epic.ts';
+import type { Outcome, WorkspaceInfo } from '../shared/api.ts';
 
 export type Tab = 'idea' | 'questions' | 'requirements' | 'spec' | 'change' | 'review' | 'diff' | 'history';
 
@@ -46,12 +46,12 @@ export type State = {
   readonly epics: readonly Epic[];
   readonly selected: string | undefined;
   readonly changeId: string | undefined;
+  /** The stage whose documents are shown; undefined = follow the epic's current stage. */
+  readonly view: DocStage | undefined;
   /** undefined = follow whatever needs a decision. */
   readonly tab: Tab | undefined;
   readonly filter: 'all' | 'mine';
   readonly busy: readonly string[];
-  readonly activity: readonly ActivityLine[];
-  readonly activityOpen: boolean;
   readonly toast: (Outcome & { readonly id: number }) | undefined;
   readonly dialog: Dialog | undefined;
   /** Bumped to refetch the open document after a save. */
@@ -64,11 +64,10 @@ export const initialState: State = {
   epics: [],
   selected: undefined,
   changeId: undefined,
+  view: undefined,
   tab: undefined,
   filter: 'all',
   busy: [],
-  activity: [],
-  activityOpen: true,
   toast: undefined,
   dialog: undefined,
   revision: 0,
@@ -79,11 +78,10 @@ export type Action =
   | { readonly type: 'epics'; readonly epics: readonly Epic[]; readonly select?: string }
   | { readonly type: 'select'; readonly slug: string }
   | { readonly type: 'select-change'; readonly changeId: string | undefined }
+  | { readonly type: 'view'; readonly view: DocStage | undefined }
   | { readonly type: 'tab'; readonly tab: Tab | undefined }
   | { readonly type: 'filter'; readonly filter: 'all' | 'mine' }
   | { readonly type: 'busy'; readonly busy: readonly string[] }
-  | { readonly type: 'activity'; readonly line: ActivityLine }
-  | { readonly type: 'toggle-activity' }
   | { readonly type: 'toast'; readonly outcome: Outcome | undefined }
   | { readonly type: 'dialog'; readonly dialog: Dialog | undefined }
   | { readonly type: 'saved' };
@@ -106,37 +104,38 @@ export const focusChange = (e: Epic): ChangeState | undefined => {
 export const reducer = (s: State, a: Action): State => {
   switch (a.type) {
     case 'workspace':
-      return { ...initialState, workspace: a.workspace, recent: a.recent ?? s.recent, filter: s.filter, activityOpen: s.activityOpen };
+      return { ...initialState, workspace: a.workspace, recent: a.recent ?? s.recent, filter: s.filter };
     case 'epics': {
       const want = a.select ?? s.selected;
       const selected = a.epics.some((e) => e.slug === want) ? want : a.epics[0]?.slug;
       const epic = a.epics.find((e) => e.slug === selected);
       const keepChange = selected === s.selected && epic?.changes.some((c) => c.id === s.changeId);
+      // Same epic, same stage: keep what the user is looking at. A new stage brings its own documents.
+      const stay = selected === s.selected && !a.select && epic?.stage === selectedEpic(s)?.stage;
       return {
         ...s,
         epics: a.epics,
         selected,
         changeId: keepChange ? s.changeId : epic && focusChange(epic)?.id,
-        tab: selected === s.selected && !a.select ? s.tab : undefined,
+        view: stay ? s.view : undefined,
+        tab: stay ? s.tab : undefined,
       };
     }
     case 'select': {
       if (a.slug === s.selected) return s;
       const epic = s.epics.find((e) => e.slug === a.slug);
-      return { ...s, selected: a.slug, changeId: epic && focusChange(epic)?.id, tab: undefined };
+      return { ...s, selected: a.slug, changeId: epic && focusChange(epic)?.id, view: undefined, tab: undefined };
     }
     case 'select-change':
-      return { ...s, changeId: a.changeId, tab: s.tab === 'idea' || s.tab === 'requirements' || s.tab === 'spec' || s.tab === 'history' ? s.tab : undefined };
+      return { ...s, changeId: a.changeId, tab: s.tab === 'history' ? s.tab : undefined };
+    case 'view':
+      return { ...s, view: a.view, tab: undefined };
     case 'tab':
       return { ...s, tab: a.tab };
     case 'filter':
       return { ...s, filter: a.filter };
     case 'busy':
       return { ...s, busy: a.busy };
-    case 'activity':
-      return { ...s, activity: [...s.activity, a.line].slice(-500) };
-    case 'toggle-activity':
-      return { ...s, activityOpen: !s.activityOpen };
     case 'toast':
       return { ...s, toast: a.outcome && { ...a.outcome, id: ++toastId } };
     case 'dialog':
@@ -146,12 +145,33 @@ export const reducer = (s: State, a: Action): State => {
   }
 };
 
+/** The stage an epic is in, as a view; a finished or abandoned epic shows its changes. */
+export const stageView = (e: Epic): DocStage => ((DOC_STAGES as readonly Stage[]).includes(e.stage) ? (e.stage as DocStage) : 'changes');
+
+/** Stages the user can look at: the current one and those before it. */
+export const canView = (e: Epic, stage: DocStage): boolean => stageIndex(stage) <= stageIndex(stageView(e));
+
+export const currentView = (s: State): DocStage => {
+  const e = selectedEpic(s);
+  if (!e) return 'requirements';
+  return s.view && canView(e, s.view) ? s.view : stageView(e);
+};
+
+/** Each stage shows only its own documents; History is the epic's audit trail and shows everywhere. */
+export const tabsFor = (e: Epic, view: DocStage, change: ChangeState | undefined): readonly Tab[] => {
+  const questions: Tab[] = e.dialog?.stage === view && e.dialog.questions.length ? ['questions'] : [];
+  if (view === 'requirements') return ['idea', ...questions, 'requirements', 'history'];
+  if (view === 'spec') return [...questions, 'spec', 'history'];
+  return change ? ['change', 'review', ...(change.branch ? (['diff'] as Tab[]) : []), 'history'] : ['history'];
+};
+
 /** The tab to show when the user has not picked one: whatever the next decision is about. */
-export const defaultTab = (e: Epic, change: ChangeState | undefined): Tab => {
-  if (e.status === 'awaiting_answers') return 'questions';
-  if (e.stage === 'requirements') return e.revision === 0 ? (e.dialog?.questions.length ? 'questions' : 'idea') : 'requirements';
-  if (e.stage === 'spec') return e.status === 'ready' && !e.pendingFeedback.length ? 'requirements' : 'spec';
-  if (!change) return 'spec';
+export const defaultTab = (e: Epic, change: ChangeState | undefined, view: DocStage = stageView(e)): Tab => {
+  if (e.status === 'awaiting_answers' && e.dialog?.stage === view) return 'questions';
+  if (view === 'requirements')
+    return e.stage === 'requirements' && e.revision === 0 ? (e.dialog?.questions.length ? 'questions' : 'idea') : 'requirements';
+  if (view === 'spec') return 'spec';
+  if (!change) return 'history';
   if (change.status === 'awaiting_review' || change.status === 'escalated' || change.status === 'mr_open' || change.status === 'merged')
     return 'review';
   return 'change';
@@ -159,7 +179,10 @@ export const defaultTab = (e: Epic, change: ChangeState | undefined): Tab => {
 
 export const currentTab = (s: State): Tab => {
   const e = selectedEpic(s);
-  return s.tab ?? (e ? defaultTab(e, selectedChange(s)) : 'idea');
+  if (!e) return 'idea';
+  const view = currentView(s);
+  const change = selectedChange(s);
+  return s.tab && tabsFor(e, view, change).includes(s.tab) ? s.tab : defaultTab(e, change, view);
 };
 
 export type StepState = 'done' | 'current' | 'gate' | 'todo';
@@ -280,7 +303,7 @@ export const changeHint = (c: ChangeState): string => {
 };
 
 export const epicHint = (e: Epic, busy: boolean): string => {
-  if (busy) return 'Agents are working. Follow along in the activity panel.';
+  if (busy) return 'Agents are working on this epic.';
   if (e.stage === 'done') return 'Done: every change is merged.';
   if (e.stage === 'abandoned') return 'Abandoned.';
   if (e.stage !== 'changes') {

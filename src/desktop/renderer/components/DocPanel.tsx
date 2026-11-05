@@ -189,6 +189,7 @@ type Loaded =
 export const DocPanel = ({
   epic,
   change,
+  tabs,
   tab,
   revision,
   onTab,
@@ -198,6 +199,7 @@ export const DocPanel = ({
 }: {
   epic: Epic;
   change: ChangeState | undefined;
+  tabs: readonly Tab[];
   tab: Tab;
   revision: number;
   onTab: (t: Tab) => void;
@@ -226,7 +228,6 @@ export const DocPanel = ({
     };
   }, [key]);
 
-  const tabs: Tab[] = ['idea', ...(epic.dialog?.questions.length ? (['questions'] as Tab[]) : []), 'requirements', 'spec', ...(change ? (['change', 'review', ...(change.branch ? (['diff'] as Tab[]) : [])] as Tab[]) : []), 'history'];
   const current = loaded?.key === key ? loaded.value : undefined;
 
   const save = async () => {

@@ -15,7 +15,6 @@ const methods = Object.fromEntries(METHODS.map((m) => [m, (...args: unknown[]) =
 
 const api = {
   ...methods,
-  onActivity: subscribe(EVENTS.activity),
   onEpicsChanged: subscribe(EVENTS.epicsChanged),
   onBusy: subscribe(EVENTS.busy),
 } as unknown as ForgeApi;

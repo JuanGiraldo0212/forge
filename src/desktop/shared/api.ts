@@ -47,7 +47,6 @@ export type DocView = {
 
 export type HistoryEntry = { readonly at: string; readonly by: string; readonly text: string };
 
-export type ActivityLine = { readonly epic: string; readonly label: string; readonly text: string; readonly at: string };
 
 export type ForgeApi = {
   readonly workspace: () => Promise<WorkspaceInfo | null>;
@@ -90,7 +89,6 @@ export type ForgeApi = {
   readonly busy: () => Promise<readonly string[]>;
 
   /** Subscriptions return an unsubscribe function. */
-  readonly onActivity: (fn: (line: ActivityLine) => void) => () => void;
   readonly onEpicsChanged: (fn: () => void) => () => void;
   readonly onBusy: (fn: (busy: readonly string[]) => void) => () => void;
 };
@@ -131,6 +129,6 @@ export const METHODS = [
 
 export type Method = (typeof METHODS)[number];
 
-export const EVENTS = { activity: 'forge:event:activity', epicsChanged: 'forge:event:epics-changed', busy: 'forge:event:busy' } as const;
+export const EVENTS = { epicsChanged: 'forge:event:epics-changed', busy: 'forge:event:busy' } as const;
 
 export const channel = (m: Method): string => `forge:${m}`;
