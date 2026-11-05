@@ -535,8 +535,11 @@ export const replay = (events: readonly EpicEvent[]): Epic | undefined => {
 /** Live changes: everything not dropped. */
 export const liveChanges = (e: Epic): readonly ChangeState[] => e.changes.filter((c) => c.status !== 'dropped');
 
-/** The change set is ready for the development gate: at least one live change, every one approved. */
-export const changeSetApproved = (e: Epic): boolean => liveChanges(e).length > 0 && liveChanges(e).every((c) => c.status === 'ready');
+/** Its spec is approved: anything past drafting (epics from before the development stage may have built some already). */
+export const specApproved = (c: ChangeState): boolean => c.status !== 'draft' && c.status !== 'revising' && c.status !== 'dropped';
+
+/** The change set is ready for the development gate: at least one live change, every one with an approved spec. */
+export const changeSetApproved = (e: Epic): boolean => liveChanges(e).length > 0 && liveChanges(e).every(specApproved);
 
 /** A change, or the epic, is waiting on a human. */
 export const needsHuman = (e: Epic): boolean =>

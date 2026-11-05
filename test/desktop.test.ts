@@ -64,6 +64,8 @@ describe('desktop view model', () => {
     assert.deepEqual(epicActions(complete, false)[0], { id: 'approve', label: 'Start development', kind: 'primary', note: epicActions(complete, false)[0]!.note });
     assert.equal(stepState(complete, 'changes'), 'gate');
     assert.match(epicHint(complete, false), /Start development/);
+    const legacy = epic({ stage: 'changes', changes: [change('C1', 'approved'), change('C2', 'ready'), change('C3', 'awaiting_review')] });
+    assert.equal(epicActions(legacy, false)[0]?.label, 'Start development', 'changes built before the development stage existed count as approved');
     const dev = epic({ stage: 'development', changes: [change('C1', 'ready')] });
     assert.equal(epicActions(dev, false)[0]?.label, 'Build ready changes');
   });

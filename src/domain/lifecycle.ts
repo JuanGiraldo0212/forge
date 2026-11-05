@@ -3,7 +3,7 @@
  * Use cases call these before doing any side effect.
  */
 import { dependentsOf } from './changes.ts';
-import { changeSetApproved, liveChanges, STARTED, stageIndex, type ChangeState, type ChangeStatus, type DocStage, type Epic, type GatedStage } from './epic.ts';
+import { changeSetApproved, liveChanges, specApproved, STARTED, stageIndex, type ChangeState, type ChangeStatus, type DocStage, type Epic, type GatedStage } from './epic.ts';
 import { err, ok, type Result } from './result.ts';
 
 export type DomainError = { readonly code: string; readonly message: string };
@@ -41,7 +41,7 @@ export const canApproveChangeSet = (e: Epic): Result<Epic, DomainError> => {
   if (e.stage !== 'changes') return fail('no_gate', `The change set can only be approved in the change specs stage (stage ${e.stage}).`);
   if (e.status === 'running') return fail('already_running', 'Change specs are being drafted.');
   if (liveChanges(e).length === 0) return fail('no_changes', 'There are no change specs to approve.');
-  const pending = liveChanges(e).filter((c) => c.status !== 'ready');
+  const pending = liveChanges(e).filter((c) => !specApproved(c));
   if (pending.length > 0 || !changeSetApproved(e))
     return fail('unapproved', `Approve or drop every change spec first: ${pending.map((c) => `${c.id} (${c.status})`).join(', ')}.`);
   return ok(e);
