@@ -2,19 +2,19 @@
  * Epic lifecycle as an event-sourced aggregate.
  * The event log is the source of truth (and the audit trail); state is a pure fold over it.
  *
- *   explore ─[gate]─► spec (epic spec) ─[gate]─► changes
+ *   requirements ─[gate]─► spec (epic spec: an RFC that plans the changes) ─[gate]─► changes
  *   In "changes", every change spec has its own lifecycle:
  *   draft ─[approve]─► ready ─► running ─► awaiting_review ─[approve]─► approved ─► mr_open ─► merged
  */
 
-export const DOC_STAGES = ['explore', 'spec', 'changes'] as const;
+export const DOC_STAGES = ['requirements', 'spec', 'changes'] as const;
 export type DocStage = (typeof DOC_STAGES)[number];
 /** Stages that produce one document and close with a single gate. */
-export type GatedStage = 'explore' | 'spec';
+export type GatedStage = 'requirements' | 'spec';
 export type Stage = DocStage | 'done' | 'abandoned';
 
 export const STAGE_LABEL: Readonly<Record<Stage, string>> = {
-  explore: 'explore',
+  requirements: 'requirements',
   spec: 'epic spec',
   changes: 'change specs',
   done: 'done',
@@ -22,7 +22,7 @@ export const STAGE_LABEL: Readonly<Record<Stage, string>> = {
 };
 
 export const ARTIFACT_FILE: Readonly<Record<GatedStage, string>> = {
-  explore: 'exploration.md',
+  requirements: 'requirements.md',
   spec: 'epic-spec.md',
 };
 
@@ -248,9 +248,9 @@ type EventBody =
 export type EpicEvent = EventBody & { readonly at: string; readonly by: string };
 export type EpicEventType = EpicEvent['type'];
 
-export const stageIndex = (stage: Stage): number => ['explore', 'spec', 'changes', 'done', 'abandoned'].indexOf(stage);
+export const stageIndex = (stage: Stage): number => ['requirements', 'spec', 'changes', 'done', 'abandoned'].indexOf(stage);
 
-const nextStage = (stage: GatedStage): DocStage => (stage === 'explore' ? 'spec' : 'changes');
+const nextStage = (stage: GatedStage): DocStage => (stage === 'requirements' ? 'spec' : 'changes');
 
 const dialogFor = (e: Epic, stage: GatedStage): StageDialog =>
   e.dialog?.stage === stage ? e.dialog : { stage, rounds: 0, delivered: 0, questions: [] };
@@ -494,7 +494,7 @@ export const replay = (events: readonly EpicEvent[]): Epic | undefined => {
     owner: first.owner,
     createdAt: first.at,
     updatedAt: first.at,
-    stage: 'explore',
+    stage: 'requirements',
     status: 'ready',
     revision: 0,
     pendingFeedback: [],
@@ -507,5 +507,5 @@ export const replay = (events: readonly EpicEvent[]): Epic | undefined => {
 
 /** A change, or the epic, is waiting on a human. */
 export const needsHuman = (e: Epic): boolean =>
-  ((e.stage === 'explore' || e.stage === 'spec') && (e.status === 'awaiting_approval' || e.status === 'awaiting_answers')) ||
+  ((e.stage === 'requirements' || e.stage === 'spec') && (e.status === 'awaiting_approval' || e.status === 'awaiting_answers')) ||
   e.changes.some((c) => c.status === 'draft' || c.status === 'awaiting_review' || c.status === 'escalated');

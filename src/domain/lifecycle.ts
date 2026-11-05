@@ -26,12 +26,12 @@ export const runnableStage = (e: Epic): Result<DocStage, DomainError> => {
   return ok(e.stage as GatedStage);
 };
 
-/** The single-document gate (explore or epic spec) that is open, if any. */
+/** The single-document gate (requirements or epic spec) that is open, if any. */
 export const openGate = (e: Epic): Result<GatedStage, DomainError> => {
   const l = live(e);
   if (!l.ok) return l;
-  if ((e.stage === 'explore' || e.stage === 'spec') && e.status === 'awaiting_approval') return ok(e.stage);
-  return fail('no_gate', `No explore or epic spec gate is open on "${e.slug}" (stage ${e.stage}, ${e.status}).`);
+  if ((e.stage === 'requirements' || e.stage === 'spec') && e.status === 'awaiting_approval') return ok(e.stage);
+  return fail('no_gate', `No requirements or epic spec gate is open on "${e.slug}" (stage ${e.stage}, ${e.status}).`);
 };
 
 /** A question the agent asked and nobody has answered yet. */
@@ -56,7 +56,7 @@ export const canRevisePlan = (e: Epic): Result<Epic, DomainError> => {
 export const canSendBack = (e: Epic, to: string): Result<GatedStage, DomainError> => {
   const l = live(e);
   if (!l.ok) return l;
-  if (to !== 'explore' && to !== 'spec') return fail('invalid_stage', 'Can only send back to explore or spec.');
+  if (to !== 'requirements' && to !== 'spec') return fail('invalid_stage', 'Can only send back to requirements or spec.');
   if (stageIndex(to) > stageIndex(e.stage)) return fail('forward', `"${to}" is ahead of the current stage ${e.stage}.`);
   const started = e.changes.filter((c) => STARTED.includes(c.status) || c.branch);
   if (started.length > 0)

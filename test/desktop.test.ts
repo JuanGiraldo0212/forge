@@ -15,7 +15,7 @@ import { fileSettings, type Keychain } from '../src/desktop/main/settings.ts';
 import { mergePaths } from '../src/desktop/main/shellEnv.ts';
 import { changeActions, currentTab, epicActions, initialState, reducer, runWouldDoSomething, stepState } from '../src/desktop/renderer/model.ts';
 import type { Outcome } from '../src/ui/actions.ts';
-import { EPIC_SPEC, makeDeps, makeRepo, scriptedAgent, sh, stageOf, tempDir } from './helpers.ts';
+import { EPIC_SPEC, makeDeps, makeRepo, REQUIREMENTS, scriptedAgent, sh, stageOf, tempDir } from './helpers.ts';
 
 const epic = (patch: Partial<Epic> = {}): Epic => ({
   slug: 'e',
@@ -23,7 +23,7 @@ const epic = (patch: Partial<Epic> = {}): Epic => ({
   owner: 'me@example.com',
   createdAt: '',
   updatedAt: '',
-  stage: 'explore',
+  stage: 'requirements',
   status: 'ready',
   revision: 0,
   pendingFeedback: [],
@@ -52,7 +52,7 @@ describe('desktop view model', () => {
     assert.equal(gate[0]?.id, 'approve');
     assert.equal(gate[0]?.kind, 'primary');
     assert.deepEqual(ids(epicActions(epic(), true)), ['stop']);
-    assert.equal(stepState(epic({ status: 'awaiting_approval' }), 'explore'), 'gate');
+    assert.equal(stepState(epic({ status: 'awaiting_approval' }), 'requirements'), 'gate');
   });
 
   it('only makes Run primary when a run would do something', () => {
@@ -109,9 +109,9 @@ describe('desktop IPC handlers', () => {
     let release: () => void = () => {};
     const gate = new Promise<void>((r) => (release = r));
     const agent = scriptedAgent([], async (req) => {
-      if (stageOf(req) === 'explore') {
+      if (stageOf(req) === 'requirements') {
         await gate;
-        return { text: '## Summary\n<img src=x onerror="alert(1)"> fine' };
+        return { text: REQUIREMENTS.replace('Users need the thing.', '<img src=x onerror="alert(1)"> fine') };
       }
       if (stageOf(req) === 'epic spec') return { text: EPIC_SPEC };
       return undefined;
@@ -151,7 +151,7 @@ describe('desktop IPC handlers', () => {
 
     release();
     assert.ok(((await running) as Outcome).ok);
-    const view = (await dispatch('readDoc', [slug, 'exploration.md'])) as { content: string; editable: boolean };
+    const view = (await dispatch('readDoc', [slug, 'requirements.md'])) as { content: string; editable: boolean };
     assert.match(view.content, /onerror/, 'raw markdown goes to the renderer, which sanitizes it');
     assert.equal(view.editable, true);
   });

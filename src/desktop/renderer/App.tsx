@@ -157,7 +157,7 @@ export const App = () => {
         {!epic ? (
           <div className="empty-main">
             <h2>No epic selected</h2>
-            <p className="muted">Create an epic to start: describe the idea, and forge explores every repo in this workspace.</p>
+            <p className="muted">Create an epic to start: describe the idea, and forge works out its requirements against every repo in this workspace.</p>
           </div>
         ) : (
           <>

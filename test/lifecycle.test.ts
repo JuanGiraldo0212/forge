@@ -21,7 +21,7 @@ import { loadEpic, type Deps } from '../src/application/deps.ts';
 import { approveStage, createEpic, runGatedStage, runnable, sendBack } from '../src/application/stages.ts';
 import { changeFile } from '../src/domain/epic.ts';
 import type { AgentRequest } from '../src/ports/index.ts';
-import { CALL_COST, EPIC_SPEC, makeDeps, makeRepo, scriptedAgent, sh, stageOf, tempDir, type Script } from './helpers.ts';
+import { CALL_COST, epicSpec, makeDeps, makeRepo, REQUIREMENTS, scriptedAgent, sh, stageOf, tempDir, type Script } from './helpers.ts';
 
 const draft = (id: string, repo: string, files: string[], dependsOn: string[] = [], title = `Change ${id}`) => ({
   id,
@@ -56,11 +56,11 @@ const run = async (deps: Deps, slug: string) => {
   return undefined;
 };
 
-/** Creates an epic and approves explore and the epic spec. */
+/** Creates an epic and approves the requirements and the epic spec. */
 const throughEpicSpec = async (deps: Deps): Promise<string> => {
   const created = await createEpic(deps, 'Due dates', 'Todos get due dates, shown in the web app.');
   assert.ok(created.ok);
-  for (const _ of ['explore', 'spec']) {
+  for (const _ of ['requirements', 'spec']) {
     await run(deps, created.value);
     assert.ok((await approveStage(deps, created.value, undefined)).ok);
   }
@@ -88,10 +88,10 @@ describe('multi-repo epic', () => {
     let redrafts = 0;
     const script: Script = async (req) => {
       switch (stageOf(req)) {
-        case 'explore':
-          return { text: '## Summary\nTouches api and web.\n## Open questions\n1. none' };
+        case 'requirements':
+          return { text: REQUIREMENTS };
         case 'epic spec':
-          return { text: EPIC_SPEC };
+          return { text: epicSpec([['C1', 'api'], ['C2', 'web', 'C1']]) };
         case 'change specs':
           return {
             structured: {
@@ -132,7 +132,7 @@ describe('multi-repo epic', () => {
     });
 
     const slug = await throughEpicSpec(deps);
-    const planningCall = calls.find((c) => stageOf(c) === 'explore')!;
+    const planningCall = calls.find((c) => stageOf(c) === 'requirements')!;
     const apiSnap = join(dir, 'worktrees', 'api', '_planning');
     assert.equal(planningCall.cwd, planning.repo, 'planning agents run from the workspace');
     assert.deepEqual(planningCall.additionalDirectories, [apiSnap, join(dir, 'worktrees', 'web', '_planning')], 'and read snapshots of every repo');
@@ -216,8 +216,8 @@ describe('change specs stage', () => {
     const wrapped: Script = async (req) => {
       const handled = await script(req);
       if (handled) return handled;
-      if (stageOf(req) === 'explore') return { text: '## Summary\nSmall.' };
-      if (stageOf(req) === 'epic spec') return { text: EPIC_SPEC };
+      if (stageOf(req) === 'requirements') return { text: REQUIREMENTS };
+      if (stageOf(req) === 'epic spec') return { text: epicSpec([['C1', 'app']]) };
       if (stageOf(req) === 'review') return { structured: { findings: [] } };
       return undefined;
     };

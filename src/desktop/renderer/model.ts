@@ -4,7 +4,7 @@
 import { needsHuman, stageIndex, type ChangeState, type Epic, type Stage } from '../../domain/epic.ts';
 import type { ActivityLine, Outcome, WorkspaceInfo } from '../shared/api.ts';
 
-export type Tab = 'idea' | 'questions' | 'exploration' | 'spec' | 'change' | 'review' | 'diff' | 'history';
+export type Tab = 'idea' | 'questions' | 'requirements' | 'spec' | 'change' | 'review' | 'diff' | 'history';
 
 export type NoteSpec = { readonly title: string; readonly label: string; readonly required: boolean; readonly confirm: string };
 
@@ -126,7 +126,7 @@ export const reducer = (s: State, a: Action): State => {
       return { ...s, selected: a.slug, changeId: epic && focusChange(epic)?.id, tab: undefined };
     }
     case 'select-change':
-      return { ...s, changeId: a.changeId, tab: s.tab === 'idea' || s.tab === 'exploration' || s.tab === 'spec' || s.tab === 'history' ? s.tab : undefined };
+      return { ...s, changeId: a.changeId, tab: s.tab === 'idea' || s.tab === 'requirements' || s.tab === 'spec' || s.tab === 'history' ? s.tab : undefined };
     case 'tab':
       return { ...s, tab: a.tab };
     case 'filter':
@@ -149,8 +149,8 @@ export const reducer = (s: State, a: Action): State => {
 /** The tab to show when the user has not picked one: whatever the next decision is about. */
 export const defaultTab = (e: Epic, change: ChangeState | undefined): Tab => {
   if (e.status === 'awaiting_answers') return 'questions';
-  if (e.stage === 'explore') return e.revision === 0 ? (e.dialog?.questions.length ? 'questions' : 'idea') : 'exploration';
-  if (e.stage === 'spec') return e.status === 'ready' && !e.pendingFeedback.length ? 'exploration' : 'spec';
+  if (e.stage === 'requirements') return e.revision === 0 ? (e.dialog?.questions.length ? 'questions' : 'idea') : 'requirements';
+  if (e.stage === 'spec') return e.status === 'ready' && !e.pendingFeedback.length ? 'requirements' : 'spec';
   if (!change) return 'spec';
   if (change.status === 'awaiting_review' || change.status === 'escalated' || change.status === 'mr_open' || change.status === 'merged')
     return 'review';
@@ -193,17 +193,17 @@ export const epicActions = (e: Epic, busy: boolean): readonly ActionSpec[] => {
   const back: ActionSpec = { id: 'back', label: 'Send back…', kind: 'secondary' };
   const abandon: ActionSpec = { id: 'abandon', label: 'Abandon…', kind: 'danger', note: note('Abandon this epic?', 'Why', true, 'Abandon epic') };
 
-  if (e.stage === 'explore' || e.stage === 'spec') {
+  if (e.stage === 'requirements' || e.stage === 'spec') {
     if (e.status === 'running') return [{ id: 'force-run', label: 'Restart stage', kind: 'secondary' }, abandon];
     if (e.status === 'awaiting_answers') return [{ id: 'answer', label: 'Answer questions', kind: 'primary' }, abandon];
     if (e.status === 'awaiting_approval')
       return [
-        { id: 'approve', label: e.stage === 'explore' ? 'Approve exploration' : 'Approve epic spec', kind: 'primary', note: note('Approve', 'Note for the next stages (optional)', false, 'Approve') },
+        { id: 'approve', label: e.stage === 'requirements' ? 'Approve requirements' : 'Approve epic spec', kind: 'primary', note: note('Approve', 'Note for the next stages (optional)', false, 'Approve') },
         { id: 'revise', label: 'Request changes…', kind: 'secondary', note: note('Request changes', 'What should change', true, 'Send feedback') },
         ...(e.stage === 'spec' ? [back] : []),
         abandon,
       ];
-    return [{ id: 'run', label: e.stage === 'explore' ? 'Run explore agent' : 'Write epic spec', kind: 'primary' }, ...(e.stage === 'spec' ? [back] : []), abandon];
+    return [{ id: 'run', label: e.stage === 'requirements' ? 'Analyze requirements' : 'Write epic spec', kind: 'primary' }, ...(e.stage === 'spec' ? [back] : []), abandon];
   }
 
   const drafts = e.changes.filter((c) => c.status === 'draft').length;
@@ -286,11 +286,11 @@ export const epicHint = (e: Epic, busy: boolean): string => {
   if (e.stage !== 'changes') {
     if (e.status === 'awaiting_answers') {
       const n = e.dialog?.questions.filter((q) => !q.answer).length ?? 0;
-      return `The ${e.stage === 'explore' ? 'explore' : 'epic spec'} agent paused with ${n} question${n === 1 ? '' : 's'} for you. Answer and it carries on.`;
+      return `The ${e.stage === 'requirements' ? 'requirements' : 'epic spec'} agent paused with ${n} question${n === 1 ? '' : 's'} for you. Answer and it carries on.`;
     }
-    if (e.status === 'awaiting_approval') return `Waiting for you: read the ${e.stage === 'explore' ? 'exploration' : 'epic spec'}, edit it if needed, then approve or request changes.`;
+    if (e.status === 'awaiting_approval') return `Waiting for you: read the ${e.stage === 'requirements' ? 'requirements' : 'epic spec'}, edit it if needed, then approve or request changes.`;
     if (e.status === 'running') return 'Marked as running, but no agent is attached in this app. Restart the stage if it crashed.';
-    return e.pendingFeedback.length ? 'Your feedback is queued. Run the agent to regenerate.' : `Next: run the ${e.stage === 'explore' ? 'explore agent' : 'epic spec agent'}.`;
+    return e.pendingFeedback.length ? 'Your feedback is queued. Run the agent to regenerate.' : `Next: run the ${e.stage === 'requirements' ? 'requirements agent' : 'epic spec agent'}.`;
   }
   if (e.changes.length === 0) return 'Next: draft change specs from the approved epic spec.';
   const waiting = e.changes.filter((c) => c.status === 'draft' || c.status === 'awaiting_review' || c.status === 'escalated');

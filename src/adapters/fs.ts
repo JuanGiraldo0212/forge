@@ -5,7 +5,7 @@
  *   .forge/rules/*.md                     learned rules, injected into every agent
  *   AGENTS.md                             team-wide instructions
  *   <epicsDir>/<slug>/events.jsonl        append-only event log (git merge=union)
- *   <epicsDir>/<slug>/idea.md, exploration.md, epic-spec.md, changes/C1.md ...
+ *   <epicsDir>/<slug>/idea.md, requirements.md, epic-spec.md, changes/C1.md ...
  */
 import { appendFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';

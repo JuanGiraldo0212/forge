@@ -35,7 +35,7 @@ describe('answers', () => {
     const at = '2026-11-05T00:00:00.000Z';
     const events = [
       { type: 'EpicCreated', slug: 'x', title: 'X', owner: 'me', at, by: 'me' },
-      { type: 'QuestionsAsked', stage: 'explore', questions: [{ id: 'Q1', text: 't', why: 'w', options: ['A', 'B'] }], sessionId: 's', sessionCostUsd: 0, costUsd: 0, at, by: 'forge' },
+      { type: 'QuestionsAsked', stage: 'requirements', questions: [{ id: 'Q1', text: 't', why: 'w', options: ['A', 'B'] }], sessionId: 's', sessionCostUsd: 0, costUsd: 0, at, by: 'forge' },
     ] as unknown as EpicEvent[];
     assert.deepEqual(replay(events)!.dialog!.questions[0]!.options, [{ label: 'A' }, { label: 'B' }]);
   });
@@ -46,7 +46,7 @@ describe('questions panel', () => {
     const at = '2026-11-05T00:00:00.000Z';
     const epic = replay([
       { type: 'EpicCreated', slug: 'x', title: 'X', owner: 'me', at, by: 'me' },
-      { type: 'QuestionsAsked', stage: 'explore', questions: [q, { ...q, id: 'Q2', header: 'Editing', text: 'Second?' }], sessionId: 's', sessionCostUsd: 0, costUsd: 0, at, by: 'forge' },
+      { type: 'QuestionsAsked', stage: 'requirements', questions: [q, { ...q, id: 'Q2', header: 'Editing', text: 'Second?' }], sessionId: 's', sessionCostUsd: 0, costUsd: 0, at, by: 'forge' },
     ] as EpicEvent[])!;
     const html = renderToStaticMarkup(<QuestionsPanel epic={epic} busy={false} onAnswered={() => {}} />);
     assert.match(html, /Where should ordering happen\?/);

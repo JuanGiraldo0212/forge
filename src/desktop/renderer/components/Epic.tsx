@@ -6,7 +6,7 @@ import { STAGE_LABEL, type ChangeState, type Epic } from '../../../domain/epic.t
 import { changeActions, changeHint, epicActions, epicHint, needsHuman, stepState, type ActionSpec } from '../model.ts';
 import { ActionButtons, Avatar, Chip, Spinner, StatusPill } from './ui.tsx';
 
-const STEPS = ['explore', 'spec', 'changes'] as const;
+const STEPS = ['requirements', 'spec', 'changes'] as const;
 
 export const Stepper = ({ epic, busy }: { epic: Epic; busy: boolean }) => (
   <ol className="stepper">

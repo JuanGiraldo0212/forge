@@ -117,7 +117,7 @@ const QuestionCard = ({ q, choice, onChoose }: { q: AskedQuestion; choice: Choic
         <OptionCard
           index={otherIndex + 1}
           label="Let the agent decide"
-          description="It picks, and explains its choice in the exploration's Decisions."
+          description="It picks, and explains its choice in the document's Decisions."
           selected={choice?.kind === 'agent'}
           multi={false}
           onPick={() => onChoose({ kind: 'agent' })}

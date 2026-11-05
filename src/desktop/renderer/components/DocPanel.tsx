@@ -1,5 +1,5 @@
 /**
- * Document viewer and editor: idea, exploration, epic spec, change spec, review, diff, history.
+ * Document viewer and editor: idea, requirements, epic spec, change spec, review, diff, history.
  */
 import { useEffect, useState, type MouseEvent } from 'react';
 import type { ChangeState, Epic } from '../../../domain/epic.ts';
@@ -9,12 +9,12 @@ import type { Tab } from '../model.ts';
 import { QuestionsPanel } from './QuestionsPanel.tsx';
 import { Button, Chip } from './ui.tsx';
 
-const DOC_OF: Partial<Record<Tab, DocName>> = { idea: 'idea.md', exploration: 'exploration.md', spec: 'epic-spec.md' };
+const DOC_OF: Partial<Record<Tab, DocName>> = { idea: 'idea.md', requirements: 'requirements.md', spec: 'epic-spec.md' };
 
 const TAB_LABEL: Record<Tab, string> = {
   idea: 'Idea',
   questions: 'Questions',
-  exploration: 'Exploration',
+  requirements: 'Requirements',
   spec: 'Epic spec',
   change: 'Change spec',
   review: 'Review',
@@ -226,7 +226,7 @@ export const DocPanel = ({
     };
   }, [key]);
 
-  const tabs: Tab[] = ['idea', ...(epic.dialog?.questions.length ? (['questions'] as Tab[]) : []), 'exploration', 'spec', ...(change ? (['change', 'review', ...(change.branch ? (['diff'] as Tab[]) : [])] as Tab[]) : []), 'history'];
+  const tabs: Tab[] = ['idea', ...(epic.dialog?.questions.length ? (['questions'] as Tab[]) : []), 'requirements', 'spec', ...(change ? (['change', 'review', ...(change.branch ? (['diff'] as Tab[]) : [])] as Tab[]) : []), 'history'];
   const current = loaded?.key === key ? loaded.value : undefined;
 
   const save = async () => {

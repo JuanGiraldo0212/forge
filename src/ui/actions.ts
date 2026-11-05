@@ -29,7 +29,7 @@ export const loadAll = async (deps: Deps): Promise<readonly Epic[]> => {
 export const createEpicAction = async (deps: Deps, title: string, idea: string): Promise<Outcome> => {
   const created = await createEpic(deps, title, idea || title);
   return created.ok
-    ? done(`Created "${created.value}" (owner ${deps.actor}). Run it to start exploring.`, 'success', created.value)
+    ? done(`Created "${created.value}" (owner ${deps.actor}). Run it to start the requirements analysis.`, 'success', created.value)
     : failed(created.error.message);
 };
 
@@ -96,7 +96,7 @@ export const reviseAction = async (deps: Deps, slug: string, changeId: string | 
 };
 
 /**
- * Records answers; once none are left open, resumes the paused agent straight away so the exploration
+ * Records answers; once none are left open, resumes the paused agent straight away so the stage
  * carries on as a conversation.
  */
 export const answerAction = async (

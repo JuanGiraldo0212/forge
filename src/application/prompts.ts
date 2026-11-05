@@ -1,8 +1,7 @@
 /**
  * Prompt builders. Pure: every input is passed in, nothing is read here.
  */
-import type { ApprovedChange, AskedQuestion, ChangeState, Epic, Finding } from '../domain/epic.ts';
-import { REQUIRED_SECTIONS } from '../domain/spec.ts';
+import type { ApprovedChange, AskedQuestion, ChangeState, Epic, Finding, GatedStage } from '../domain/epic.ts';
 import type { CheckResult } from '../ports/index.ts';
 
 export type RepoRef = {
@@ -18,6 +17,8 @@ const section = (title: string, body: string | undefined): string =>
   body && body.trim() ? `## ${title}\n\n${body.trim()}\n\n` : '';
 
 const bullets = (items: readonly string[]): string => items.map((i) => `- ${i}`).join('\n');
+
+const lower = (text: string): string => text.charAt(0).toLowerCase() + text.slice(1);
 
 const tail = (text: string, max: number): string =>
   text.length <= max ? text : `[... ${text.length - max} chars truncated ...]\n${text.slice(-max)}`;
@@ -56,7 +57,7 @@ export type DocInputs = {
   readonly epic: Epic;
   readonly idea: string;
   readonly repos: readonly RepoRef[];
-  readonly exploration?: string;
+  readonly requirements?: string;
   readonly spec?: string;
   readonly previous?: string;
 };
@@ -71,7 +72,8 @@ ${reposList(repos)}
 
 `;
 
-export type ExploreInputs = DocInputs & {
+/** Inputs of a stage whose agent may pause with questions for the owner. */
+export type AskingInputs = DocInputs & {
   readonly answered: readonly AskedQuestion[];
   /** Question rounds the agent may still use; 0 = it must finish now. */
   readonly roundsLeft: number;
@@ -81,67 +83,123 @@ export type ExploreInputs = DocInputs & {
 const qa = (qs: readonly AskedQuestion[]): string =>
   qs.map((q) => `- ${q.id}: ${q.text}\n  Answer (${q.answer?.by}): ${q.answer?.text}`).join('\n');
 
-const askingRules = (roundsLeft: number, maxPerRound: number): string =>
+const WHAT_TO_ASK: Readonly<Record<GatedStage, string>> = {
+  requirements:
+    'Ask about the product, not the implementation: who it is for, the expected behavior and edge cases, where scope ends, priorities, and constraints the code cannot tell you (deadlines, compliance, compatibility promises).',
+  spec: 'Ask technical decisions the requirements and the code do not settle: the shape of a contract between repositories, which of two existing patterns to follow, a migration or rollout strategy, or how to slice the work.',
+};
+
+const askingRules = (stage: GatedStage, roundsLeft: number, maxPerRound: number): string =>
   roundsLeft > 0
     ? `## Asking the owner
 
-You can ask the epic's owner with the ask_human tool while you explore (up to ${maxPerRound} questions per call, ${roundsLeft} more call${roundsLeft === 1 ? '' : 's'} at most). The run pauses after the call and you are resumed with the answers, so:
-- Ask early when an answer changes where you look or what you recommend: an ambiguous goal, a product or team decision, which of two existing patterns to follow, a constraint that isn't in the code.
+You can ask the epic's owner with the ask_human tool as you work (up to ${maxPerRound} questions per call, ${roundsLeft} more call${roundsLeft === 1 ? '' : 's'} at most). The run pauses after the call and you are resumed with the answers, so:
+- Ask early when an answer changes where you look or what you write. ${WHAT_TO_ASK[stage]}
 - Never ask what the code, tests or docs can tell you. Look first.
 - Put every question you need right now into one call. For each: a 2-3 word header; the question in one short sentence; why it matters (context and what you found go here); and 2-4 distinct options, each a few-word label plus a one-line description. Mark the one you'd pick as recommended. Then stop and wait.
 
 `
     : `## Asking the owner
 
-You can't ask more questions. Finish with what you know, and list anything still unresolved under "Open questions".
+You can't ask more questions. Finish with what you know${stage === 'requirements' ? ', and list anything still unresolved under "Open questions"' : ', and state any decision you made on the owner\'s behalf under "Decisions"'}.
 
 `;
 
-const EXPLORATION_FORMAT = `Respond with only a markdown document with these sections:
+const REQUIREMENTS_FORMAT = `Respond with only a markdown document with these sections:
 
-## Summary
-What the epic means here, in a few sentences, and which repositories it touches.
+## Problem
+Who has the problem, what it is, and why it matters now. A few sentences.
 
-## Relevant code
-Per repository: file paths with a one-line role each.
+## Users and scenarios
+Who is affected, and the main scenarios step by step from their side.
 
-## Constraints and invariants
-Existing behavior, contracts between repositories (APIs, events, schemas) and tests that must keep working.
+## Current behavior
+What the product does today in these scenarios, per repository, citing the files that show it. Facts only, no proposals.
+
+## Functional requirements
+Numbered items: "- R1: <what must be true>", each with an indented "- Acceptance: <a checkable criterion>". Say what, never how: no files, modules or designs.
+
+## Non-functional requirements
+Numbered items continuing the same sequence (performance, security, compatibility, accessibility, data). "None" if there are none.
+
+## Out of scope
+What this epic deliberately does not do.
 
 ## Decisions
-Each question the owner answered, the answer, and what it changed in your understanding. "None" if there were none.
-
-## Options
-One to three approaches with tradeoffs. Mark the one you recommend and why.
-
-## Risks
+Each question the owner answered, the answer, and what it changed. "None" if there were none.
 
 ## Open questions
 Only what is still unresolved, each followed by an empty "Answer:" line. "None" if nothing is.`;
 
-export const explorePrompt = (i: ExploreInputs): string => `${header('explore', i)}${section('Idea', i.idea)}${section('Human guidance', guidance(i.epic))}${section('Already answered by the owner', i.answered.length ? qa(i.answered) : undefined)}${revision(i.epic, i.previous)}Investigate the repositories (read-only) to understand what this epic means across them. Do not design the final solution yet.
+const REQUIREMENTS_TASK = `Analyze what this idea requires. Read the repositories (read-only) only to learn how the product behaves today and what constrains it. Do not design a solution or propose an implementation: that is the next stage, and it builds on what you write here.`;
 
-${askingRules(i.roundsLeft, i.maxPerRound)}When you have what you need, ${EXPLORATION_FORMAT.charAt(0).toLowerCase()}${EXPLORATION_FORMAT.slice(1)}
+export const requirementsPrompt = (i: AskingInputs): string => `${header('requirements', i)}${section('Idea', i.idea)}${section('Human guidance', guidance(i.epic))}${section('Already answered by the owner', i.answered.length ? qa(i.answered) : undefined)}${revision(i.epic, i.previous)}${REQUIREMENTS_TASK}
+
+${askingRules('requirements', i.roundsLeft, i.maxPerRound)}When you have what you need, ${lower(REQUIREMENTS_FORMAT)}
 `;
 
-/** Resumes a paused explore session with the owner's answers (and any revision feedback). */
-export const exploreContinuePrompt = (answers: readonly AskedQuestion[], feedback: readonly string[], roundsLeft: number, maxPerRound: number): string => `${section('The owner answered', answers.length ? qa(answers) : undefined)}${section('Feedback you must address', feedback.length ? bullets(feedback) : undefined)}Continue exploring with this in mind.
+const SPEC_FORMAT = `Respond with only a markdown document with these sections:
 
-${askingRules(roundsLeft, maxPerRound)}When you have what you need, ${EXPLORATION_FORMAT.charAt(0).toLowerCase()}${EXPLORATION_FORMAT.slice(1)}
+## Summary
+The outcome in one paragraph, and the repositories it touches.
+
+## Approach
+How the requirements will be met, only at the depth needed to slice the work: what each repository is responsible for, the contracts between repositories (endpoints, events, payload fields, errors), the data and migration strategy, and the order things must land in. Name modules and areas, not every file.
+
+## Alternatives considered
+Other approaches, a line or two each, and why not.
+
+## Decisions
+Only if you asked the owner questions: each question, the answer, and what it changed.
+
+## Changes
+One subsection per change, in delivery order, exactly like this:
+
+### C1: <short title>
+- Repo: <repository name>
+- Depends on: <ids of changes that must merge first, or none>
+- Requirements: <the requirement ids it delivers, e.g. R1, R3>
+
+One short paragraph: what this change does and where its boundary is.
+
+## Verification
+End-to-end checks for the epic as a whole: a list of concrete, checkable items.
+
+## Must not break
+A list of existing behaviors, APIs and tests that must keep working.
+
+## Risk
+Start with low, medium or high, then one sentence why. High means security, data, money, auth, migrations or public API.
+
+Add a "## Rollout" section only when flags, migrations or deploy order matter.`;
+
+const SLICING_RULES = (max: number) => `Rules for the changes:
+- Every requirement is covered by at least one change.
+- One change is one merge request in exactly one repository. A contract between repositories is usually two changes: the provider first, then the consumer depending on it.
+- One concern per change, small enough to review in one sitting (at most ${max} files each).
+- Changes that do not depend on each other should touch different areas, so they can be built in parallel.`;
+
+export const specPrompt = (i: AskingInputs & { readonly maxFilesPerChange: number }): string => `${header('epic spec', i)}${section('Idea', i.idea)}${section('Approved requirements', i.requirements)}${section('Human guidance', guidance(i.epic))}${section('Already answered by the owner', i.answered.length ? qa(i.answered) : undefined)}${revision(i.epic, i.previous)}Write the epic spec: an RFC whose main purpose is to break the epic into changes. Each change becomes one change spec and one merge request; the change specs, written next, carry the file-level detail (exact files, precise behavior, tests). Explore the code as deeply as you need to slice the work correctly and settle the contracts between repositories, and no deeper.
+
+${SLICING_RULES(i.maxFilesPerChange)}
+
+${askingRules('spec', i.roundsLeft, i.maxPerRound)}When you have what you need, ${lower(SPEC_FORMAT)}
+
+Do not leave TODO or TBD text.
 `;
 
-export const specPrompt = (i: DocInputs): string => `${header('epic spec', i)}${section('Idea', i.idea)}${section('Exploration (with human answers)', i.exploration)}${section('Human guidance', guidance(i.epic))}${revision(i.epic, i.previous)}Write the epic spec: the whole outcome across every repository. Change specs (one per merge request) are derived from it next, and the agents that implement them see this spec, so be precise.
+const FORMAT: Readonly<Record<GatedStage, string>> = { requirements: REQUIREMENTS_FORMAT, spec: SPEC_FORMAT };
 
-Respond with only a markdown document with exactly these sections: ${REQUIRED_SECTIONS.map((s) => `"## ${s}"`).join(', ')}.
+/** Resumes a paused stage session with the owner's answers (and any revision feedback). */
+export const continuePrompt = (
+  stage: GatedStage,
+  answers: readonly AskedQuestion[],
+  feedback: readonly string[],
+  roundsLeft: number,
+  maxPerRound: number,
+): string => `${section('The owner answered', answers.length ? qa(answers) : undefined)}${section('Feedback you must address', feedback.length ? bullets(feedback) : undefined)}Continue with this in mind.
 
-- Goal: the outcome, in one paragraph.
-- Non-goals: what this epic deliberately does not do.
-- Behavior: the observable behavior after the epic, per repository where it differs, including contracts between them (endpoints, payloads, errors) and edge cases.
-- Verification: a list of concrete, checkable items (tests, commands, observable results).
-- Must not break: a list of existing behaviors, APIs and tests that must keep working.
-- Risk: start with low, medium or high, then one sentence why. High means security, data, money, auth, migrations or public API.
-
-Do not leave TODO or TBD text. Put anything unresolved in Non-goals, or state the open decision in Behavior explicitly.
+${askingRules(stage, roundsLeft, maxPerRound)}When you have what you need, ${lower(FORMAT[stage])}
 `;
 
 export type ChangesInputs = DocInputs & {
@@ -161,7 +219,9 @@ const CHANGE_RULES = (max: number) => `Rules for every change spec:
 - kind: feature | fix | refactor | test | chore. feature and fix changes must add a test that fails without the change.
 - risk: low | medium | high.`;
 
-export const changesPrompt = (i: ChangesInputs): string => `${header('change specs', i)}${section('Approved epic spec', i.spec)}${section('Exploration', i.exploration)}${section('Human guidance', guidance(i.epic))}${section('Already approved change specs (fixed: do not repeat, change or reuse their ids)', i.approved.map((c) => c.markdown).join('\n\n'))}${section('Current drafts', i.drafts.join('\n\n'))}${section('Feedback you must address', i.epic.pendingFeedback.length ? bullets(i.epic.pendingFeedback) : undefined)}Break the epic into change specs. Return the complete set of drafts (not the approved ones). Keep a draft's id when you keep that change; use new ids (C1, C2, ...) for new changes and never reuse: ${i.reserved.join(', ') || 'none reserved'}.
+export const changesPrompt = (i: ChangesInputs): string => `${header('change specs', i)}${section('Approved epic spec', i.spec)}${section('Approved requirements', i.requirements)}${section('Human guidance', guidance(i.epic))}${section('Already approved change specs (fixed: do not repeat, change or reuse their ids)', i.approved.map((c) => c.markdown).join('\n\n'))}${section('Current drafts', i.drafts.join('\n\n'))}${section('Feedback you must address', i.epic.pendingFeedback.length ? bullets(i.epic.pendingFeedback) : undefined)}Write one change spec for each change planned in the epic spec's "Changes" section, keeping its id, repository and dependencies. The epic spec settled how the work is sliced; your job is the detail an implementing agent needs: the exact files, precise behavior, and the tests and checks that prove it. Read the code to get this right. Only add, split, merge or drop changes when the feedback asks for it, or when a planned change cannot meet the rules below; then say why in its goal.
+
+Return the complete set of drafts (not the approved ones). Keep a draft's id when you keep that change; use new ids for new changes and never reuse: ${i.reserved.join(', ') || 'none reserved'}.
 
 ${CHANGE_RULES(i.maxFilesPerChange)}
 

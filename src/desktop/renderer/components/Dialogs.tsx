@@ -83,7 +83,7 @@ export const NewEpicDialog = ({ onSubmit, onClose }: { onSubmit: (title: string,
           Idea
           <textarea rows={7} value={idea} onChange={(e) => setIdea(e.target.value)} placeholder="What should change, for whom, and why. Mention every repo it touches." />
         </label>
-        <p className="muted small">You will own this epic. The explore agent reads every configured repo.</p>
+        <p className="muted small">You will own this epic. The requirements agent reads every configured repo.</p>
         <div className="modal-actions">
           <Button kind="ghost" onClick={onClose}>
             Cancel
@@ -97,8 +97,8 @@ export const NewEpicDialog = ({ onSubmit, onClose }: { onSubmit: (title: string,
   );
 };
 
-export const BackDialog = ({ onSubmit, onClose }: { onSubmit: (to: 'explore' | 'spec', note: string) => Promise<void>; onClose: () => void }) => {
-  const [to, setTo] = useState<'explore' | 'spec'>('spec');
+export const BackDialog = ({ onSubmit, onClose }: { onSubmit: (to: 'requirements' | 'spec', note: string) => Promise<void>; onClose: () => void }) => {
+  const [to, setTo] = useState<'requirements' | 'spec'>('spec');
   const [note, setNote] = useState('');
   const { pending, submit } = useSubmit(() => onSubmit(to, note.trim()));
   return (
@@ -106,7 +106,7 @@ export const BackDialog = ({ onSubmit, onClose }: { onSubmit: (to: 'explore' | '
       <form onSubmit={submit}>
         <fieldset className="radio-row">
           <label>
-            <input type="radio" checked={to === 'explore'} onChange={() => setTo('explore')} /> Explore
+            <input type="radio" checked={to === 'requirements'} onChange={() => setTo('requirements')} /> Requirements
           </label>
           <label>
             <input type="radio" checked={to === 'spec'} onChange={() => setTo('spec')} /> Epic spec
