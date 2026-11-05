@@ -50,7 +50,7 @@ export const runAction = async (deps: Deps, slug: string, force: boolean): Promi
   if (stage === 'development') {
     const r = await runDevelopment(deps, epic, force);
     if (!r.ok) return failed(r.error.message);
-    const parts = [...r.value.outcomes.map((o) => `${o.changeId}: ${o.result}`), r.value.outcomes.length ? '' : (r.value.idle ?? '')].filter(Boolean);
+    const parts = [...r.value.outcomes.map((o) => `${o.changeId}: ${o.result}${o.detail ? ` (${o.detail})` : ''}`), r.value.outcomes.length ? '' : (r.value.idle ?? '')].filter(Boolean);
     const bad = r.value.outcomes.some((o) => o.result === 'failed' || o.result === 'escalated');
     return done(parts.join(' · ') || 'Nothing to build.', bad ? 'error' : 'info');
   }
