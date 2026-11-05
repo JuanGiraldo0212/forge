@@ -166,6 +166,8 @@ None
     assert.match(text, /missing or empty section "## Problem"/);
     assert.match(text, /R3 is listed twice/);
     assert.match(text, /TODO\/TBD/);
+    const open = lintRequirements(good.replace('## Open questions\nNone', '## Open questions\n- Past dates allowed?\n  Answer:\n- Format?\n  Answer: ISO'));
+    assert.deepEqual(open.ok ? [] : open.error, ['1 open question has no answer: fill in each "Answer:" line, or request a revision']);
     const none = lintRequirements(good.replace(/- \**R\d.*\n/g, '- something\n'));
     assert.match(none.ok ? '' : none.error.join('\n'), /needs numbered items/);
   });

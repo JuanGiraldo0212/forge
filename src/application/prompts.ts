@@ -131,7 +131,9 @@ Each question the owner answered, the answer, and what it changed. "None" if the
 ## Open questions
 Only what is still unresolved, each followed by an empty "Answer:" line. "None" if nothing is.`;
 
-const REQUIREMENTS_TASK = `Analyze what this idea requires. Read the repositories (read-only) only to learn how the product behaves today and what constrains it. Do not design a solution or propose an implementation: that is the next stage, and it builds on what you write here.`;
+const REQUIREMENTS_TASK = `Analyze what this idea requires. Read the repositories (read-only) only to learn how the product behaves today and what constrains it. Do not design a solution or propose an implementation: that is the next stage, and it builds on what you write here.
+
+The requirements cannot be approved while an open question has no answer, and the next stage must not have to settle product questions. So ask about every product decision you can't settle from the code while you still can, rather than leaving it open. When the feedback or the document gives an answer to an open question, fold it into the requirements and Decisions, and drop it from "Open questions".`;
 
 export const requirementsPrompt = (i: AskingInputs): string => `${header('requirements', i)}${section('Idea', i.idea)}${section('Human guidance', guidance(i.epic))}${section('Already answered by the owner', i.answered.length ? qa(i.answered) : undefined)}${revision(i.epic, i.previous)}${REQUIREMENTS_TASK}
 
@@ -144,7 +146,7 @@ const SPEC_FORMAT = `Respond with only a markdown document with these sections:
 The outcome in one paragraph, and the repositories it touches.
 
 ## Approach
-How the requirements will be met, only at the depth needed to slice the work: what each repository is responsible for, the contracts between repositories (endpoints, events, payload fields, errors), the data and migration strategy, and the order things must land in. Name modules and areas, not every file.
+How the requirements will be met, only at the depth needed to slice the work: what each repository is responsible for, the contracts between repositories (endpoints, events, payload fields, errors), the data and migration strategy, and the order things must land in. Inside a repository, name areas and responsibilities only: no function signatures, file lists, algorithms or test plans. The change specs carry those.
 
 ## Alternatives considered
 Other approaches, a line or two each, and why not.
@@ -160,7 +162,7 @@ One subsection per change, in delivery order, exactly like this:
 - Depends on: <ids of changes that must merge first, or none>
 - Requirements: <the requirement ids it delivers, e.g. R1, R3>
 
-One short paragraph: what this change does and where its boundary is.
+Two or three sentences: what this change delivers and where its boundary is (what it leaves to other changes). No file names, function signatures or test lists.
 
 ## Verification
 End-to-end checks for the epic as a whole: a list of concrete, checkable items.
@@ -177,7 +179,8 @@ const SLICING_RULES = (max: number) => `Rules for the changes:
 - Every requirement is covered by at least one change.
 - One change is one merge request in exactly one repository. A contract between repositories is usually two changes: the provider first, then the consumer depending on it.
 - One concern per change, small enough to review in one sitting (at most ${max} files each).
-- Changes that do not depend on each other should touch different areas, so they can be built in parallel.`;
+- Changes that do not depend on each other should touch different areas, so they can be built in parallel.
+- The epic spec decides what each change is and how they fit together; it does not design their internals.`;
 
 export const specPrompt = (i: AskingInputs & { readonly maxFilesPerChange: number }): string => `${header('epic spec', i)}${section('Idea', i.idea)}${section('Approved requirements', i.requirements)}${section('Human guidance', guidance(i.epic))}${section('Already answered by the owner', i.answered.length ? qa(i.answered) : undefined)}${revision(i.epic, i.previous)}Write the epic spec: an RFC whose main purpose is to break the epic into changes. Each change becomes one change spec and one merge request; the change specs, written next, carry the file-level detail (exact files, precise behavior, tests). Explore the code as deeply as you need to slice the work correctly and settle the contracts between repositories, and no deeper.
 

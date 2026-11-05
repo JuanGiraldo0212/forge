@@ -72,18 +72,29 @@ const missingSections = (s: ReadonlyMap<string, string>, names: readonly string[
 const requirementItems = (body: string): readonly string[] =>
   listItems(body).flatMap((item) => item.match(/^\**(R\d+)\b/)?.[1] ?? []);
 
+/**
+ * Open questions whose "Answer:" line is still empty. The owner answers by filling it in; the epic spec
+ * is written from the requirements, so it must not inherit product questions.
+ */
+export const unansweredQuestions = (markdown: string): number =>
+  (sections(markdown).get('open questions') ?? '').split('\n').filter((l) => /^\s*(?:[-*]\s+)?\**Answer\**:\**\s*$/i.test(l)).length;
+
 const duplicates = (ids: readonly string[]): readonly string[] => [...new Set(ids.filter((id, i) => ids.indexOf(id) !== i))];
 
 export const lintRequirements = (markdown: string): Result<{ readonly ids: readonly string[] }, readonly string[]> => {
   const s = sections(markdown);
   const functional = requirementItems(s.get('functional requirements') ?? '');
   const ids = [...functional, ...requirementItems(s.get('non functional requirements') ?? '')];
+  const unanswered = unansweredQuestions(markdown);
   const issues = [
     ...missingSections(s, REQUIREMENTS_REQUIRED),
     ...(s.get('functional requirements') && functional.length === 0
       ? ['"Functional requirements" needs numbered items like "- R1: ..."']
       : []),
     ...duplicates(ids).map((id) => `requirement ${id} is listed twice`),
+    ...(unanswered > 0
+      ? [`${unanswered} open question${unanswered === 1 ? ' has' : 's have'} no answer: fill in each "Answer:" line, or request a revision`]
+      : []),
     ...(PLACEHOLDER.test(markdown) ? ['requirements still contain TODO/TBD or <placeholder> text'] : []),
   ];
   return issues.length > 0 ? err(issues) : ok({ ids });

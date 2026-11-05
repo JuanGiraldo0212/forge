@@ -25,9 +25,11 @@ idea ─► requirements ─[approve]─► epic spec (RFC) ─[approve]─► c
 - **Requirements** (`requirements.md`): what the idea requires, not how to build it. The agent reads the
   repos only to learn how the product behaves today. Functional and non-functional requirements are
   numbered **R1, R2…**, each with acceptance criteria. It can't be approved without Problem, Functional
-  requirements and Out of scope.
+  requirements and Out of scope, or while an open question has an empty `Answer:` line: product
+  questions are settled here, not left to the epic spec. Fill in the answers, or request a revision.
 - **Epic spec** (`epic-spec.md`): an RFC whose main job is to **slice the epic into changes**. It goes only as
-  deep into the code as slicing and the contracts between repos need: Summary, Approach, Alternatives
+  deep into the code as slicing and the contracts between repos need, and leaves each change's internals
+  (files, signatures, tests) to its change spec: Summary, Approach, Alternatives
   considered, **Changes**, Verification, Must not break and Risk. Each planned change is a `### C1: Title`
   subsection naming its repo, its dependencies and the requirements it delivers. It can't be approved
   while a requirement is left uncovered, a change names an unknown repo or requirement, or the
