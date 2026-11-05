@@ -179,6 +179,7 @@ export const App = () => {
                 )}
                 <DocPanel
                   epic={epic}
+                  view={view}
                   change={showChanges ? change : undefined}
                   tabs={tabsFor(epic, view, showChanges ? change : undefined)}
                   tab={tab}

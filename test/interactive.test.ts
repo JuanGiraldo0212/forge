@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import type { Deps } from '../src/application/deps.ts';
 import { loadEpic } from '../src/application/deps.ts';
-import { answerQuestions, approveStage, createEpic, reviseStage, runGatedStage, runnable } from '../src/application/stages.ts';
+import { answerQuestions, approveStage, createEpic, reviseStage, runGatedStage, runnable, sendBack } from '../src/application/stages.ts';
 import type { AgentRequest } from '../src/ports/index.ts';
 import { answerAction } from '../src/ui/actions.ts';
 import { CALL_COST, EPIC_SPEC, makeDeps, makeRepo, REQUIREMENTS, scriptedAgent, stageOf, tempDir, type Script } from './helpers.ts';
@@ -95,7 +95,18 @@ describe('interactive planning', () => {
     assert.match(spec.prompt, /## Approved requirements[\s\S]*R1: The thing works/);
     assert.match(spec.prompt, /Ask technical decisions/);
     assert.doesNotMatch(spec.prompt, /Admins only/, 'requirements answers reach it through the document');
-    assert.equal((await epicOf(deps, slug)).dialog?.stage, 'spec');
+    const moved = await epicOf(deps, slug);
+    assert.equal(moved.dialog?.stage, 'spec');
+    assert.deepEqual(moved.pastDialogs.requirements?.questions.map((q) => q.answer?.text), ['Postgres', 'Admins only'], 'the approved stage keeps its answers');
+
+    // Sending back restores that stage's answers as context, without the old session, and drops later stages.
+    assert.ok((await sendBack(deps, slug, 'requirements', 'rethink scope')).ok);
+    const back = await epicOf(deps, slug);
+    assert.equal(back.dialog?.stage, 'requirements');
+    assert.equal(back.dialog?.sessionId, undefined);
+    assert.deepEqual(back.pastDialogs, {});
+    await run(deps, slug);
+    assert.match(calls.at(-1)!.prompt, /Already answered by the owner[\s\S]*Admins only/);
   });
 
   it('stops offering the tool after the round limit', async () => {

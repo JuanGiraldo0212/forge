@@ -160,6 +160,8 @@ export type Epic = {
   readonly changes: readonly ChangeState[];
   /** Questions and answers of the current single-document stage. */
   readonly dialog?: StageDialog;
+  /** Conversations of approved stages, kept for reference (and restored if the epic is sent back). */
+  readonly pastDialogs: Partial<Record<GatedStage, StageDialog>>;
   readonly lastError?: string;
   readonly costUsd: number;
 };
@@ -288,6 +290,10 @@ export const choiceFromInput = (q: Question, input: string): Choice => {
   return { kind: 'options', labels: [...new Set(picks)].map((n) => q.options[n - 1]!.label) };
 };
 
+/** A stage's conversation: the live one if it is the current stage, else the one kept when it was approved. */
+export const stageDialog = (e: Epic, stage: GatedStage): StageDialog | undefined =>
+  e.dialog?.stage === stage ? e.dialog : e.pastDialogs[stage];
+
 /** Questions still waiting for a human answer. */
 export const openQuestions = (e: Epic): readonly AskedQuestion[] => e.dialog?.questions.filter((q) => !q.answer) ?? [];
 
@@ -372,7 +378,8 @@ const applyEvent = (e: Epic, ev: EpicEvent): Epic => {
     case 'StageFailed':
       return addCost({ ...e, status: 'ready', lastError: ev.reason }, ev.costUsd);
     case 'GateApproved': {
-      const moved = { ...e, stage: nextStage(ev.stage), status: 'ready' as const, dialog: undefined };
+      const pastDialogs = e.dialog?.stage === ev.stage ? { ...e.pastDialogs, [ev.stage]: e.dialog } : e.pastDialogs;
+      const moved = { ...e, stage: nextStage(ev.stage), status: 'ready' as const, dialog: undefined, pastDialogs };
       return ev.note ? note(moved, { stage: ev.stage, kind: 'approve', text: ev.note, ...stamp }) : moved;
     }
     case 'RevisionRequested':
@@ -380,7 +387,12 @@ const applyEvent = (e: Epic, ev: EpicEvent): Epic => {
         { ...e, status: 'ready', pendingFeedback: [...e.pendingFeedback, ev.note] },
         { stage: ev.stage, kind: 'revise', text: ev.note, ...stamp },
       );
-    case 'SentBack':
+    case 'SentBack': {
+      // Answers stay useful context; the old session does not. Stages from `to` on are redone.
+      const kept = stageDialog(e, ev.to);
+      const pastDialogs = Object.fromEntries(
+        Object.entries(e.pastDialogs).filter(([stage]) => stageIndex(stage as GatedStage) < stageIndex(ev.to)),
+      ) as Epic['pastDialogs'];
       return note(
         {
           ...e,
@@ -388,11 +400,12 @@ const applyEvent = (e: Epic, ev: EpicEvent): Epic => {
           status: 'ready',
           changes: [],
           pendingFeedback: [ev.note],
-          // Answers stay useful context; the old session does not.
-          dialog: e.dialog?.stage === ev.to ? { ...e.dialog, sessionId: undefined, sessionCostUsd: undefined } : undefined,
+          dialog: kept && { ...kept, sessionId: undefined, sessionCostUsd: undefined },
+          pastDialogs,
         },
         { stage: ev.to, kind: 'back', text: ev.note, ...stamp },
       );
+    }
     case 'ChangesDrafted': {
       const kept = e.changes.filter((c) => !ev.removed.includes(c.id));
       const byId = new Map(kept.map((c) => [c.id, c]));
@@ -500,6 +513,7 @@ export const replay = (events: readonly EpicEvent[]): Epic | undefined => {
     pendingFeedback: [],
     notes: [],
     changes: [],
+    pastDialogs: {},
     costUsd: 0,
   };
   return rest.reduce((e, ev) => ({ ...applyEvent(e, ev), updatedAt: ev.at }), initial);

@@ -3,7 +3,7 @@
  * "Something else" and "Let the agent decide". Sending resumes the paused agent.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { answerText, type AskedQuestion, type Choice, type Epic } from '../../../domain/epic.ts';
+import { answerText, type AskedQuestion, type Choice, type Epic, type StageDialog } from '../../../domain/epic.ts';
 import type { Outcome } from '../../shared/api.ts';
 import { Button } from './ui.tsx';
 
@@ -127,8 +127,8 @@ const QuestionCard = ({ q, choice, onChoose }: { q: AskedQuestion; choice: Choic
   );
 };
 
-const Answered = ({ questions }: { questions: readonly AskedQuestion[] }) => (
-  <details className="q-history" open={questions.length <= 3}>
+const Answered = ({ questions, expanded }: { questions: readonly AskedQuestion[]; expanded: boolean }) => (
+  <details className="q-history" open={expanded || questions.length <= 3}>
     <summary>
       Answered <span className="muted">({questions.length})</span>
     </summary>
@@ -147,8 +147,9 @@ const Answered = ({ questions }: { questions: readonly AskedQuestion[] }) => (
   </details>
 );
 
-export const QuestionsPanel = ({ epic, busy, onAnswered }: { epic: Epic; busy: boolean; onAnswered: (o: Outcome) => void }) => {
-  const questions = epic.dialog?.questions ?? [];
+/** `dialog` is the shown stage's conversation: live (answerable) for the current stage, read-only for an approved one. */
+export const QuestionsPanel = ({ epic, dialog, busy, onAnswered }: { epic: Epic; dialog: StageDialog | undefined; busy: boolean; onAnswered: (o: Outcome) => void }) => {
+  const questions = dialog?.questions ?? [];
   const open = useMemo(() => questions.filter((q) => !q.answer), [questions]);
   const answered = questions.filter((q) => q.answer);
   const [draft, setDraft] = useState<Draft>({});
@@ -241,7 +242,7 @@ export const QuestionsPanel = ({ epic, busy, onAnswered }: { epic: Epic; busy: b
           </div>
         </section>
       )}
-      {answered.length > 0 && <Answered questions={answered} />}
+      {answered.length > 0 && <Answered questions={answered} expanded={open.length === 0} />}
     </div>
   );
 };

@@ -29,6 +29,7 @@ const epic = (patch: Partial<Epic> = {}): Epic => ({
   pendingFeedback: [],
   notes: [],
   changes: [],
+  pastDialogs: {},
   costUsd: 0,
   ...patch,
 });
@@ -107,7 +108,9 @@ describe('desktop view model', () => {
     const s = reducer(initialState, { type: 'epics', epics: [e] });
     assert.equal(currentTab(s), 'questions');
     assert.deepEqual(tabsFor(e, 'spec', undefined), ['questions', 'spec', 'history']);
-    assert.deepEqual(tabsFor(e, 'requirements', undefined), ['idea', 'requirements', 'history'], 'past stage: its dialog is gone');
+    assert.deepEqual(tabsFor(e, 'requirements', undefined), ['idea', 'requirements', 'history'], 'that stage asked nothing');
+    const asked = { ...e, pastDialogs: { requirements: { stage: 'requirements' as const, rounds: 1, delivered: 1, questions: [{ ...q, answer: { text: 'a', by: 'me', at: '' } }] } } };
+    assert.deepEqual(tabsFor(asked, 'requirements', undefined), ['idea', 'questions', 'requirements', 'history'], 'an approved stage keeps its questions');
   });
 });
 

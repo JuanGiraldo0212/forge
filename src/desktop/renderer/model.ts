@@ -1,7 +1,7 @@
 /**
  * Renderer view model: pure state, reducer and "what can I do here" rules. No React, no DOM, no IPC.
  */
-import { DOC_STAGES, needsHuman, stageIndex, type ChangeState, type DocStage, type Epic, type Stage } from '../../domain/epic.ts';
+import { DOC_STAGES, needsHuman, stageDialog, stageIndex, type ChangeState, type DocStage, type Epic, type Stage } from '../../domain/epic.ts';
 import type { Outcome, WorkspaceInfo } from '../shared/api.ts';
 
 export type Tab = 'idea' | 'questions' | 'requirements' | 'spec' | 'change' | 'review' | 'diff' | 'history';
@@ -159,7 +159,7 @@ export const currentView = (s: State): DocStage => {
 
 /** Each stage shows only its own documents; History is the epic's audit trail and shows everywhere. */
 export const tabsFor = (e: Epic, view: DocStage, change: ChangeState | undefined): readonly Tab[] => {
-  const questions: Tab[] = e.dialog?.stage === view && e.dialog.questions.length ? ['questions'] : [];
+  const questions: Tab[] = view !== 'changes' && stageDialog(e, view)?.questions.length ? ['questions'] : [];
   if (view === 'requirements') return ['idea', ...questions, 'requirements', 'history'];
   if (view === 'spec') return [...questions, 'spec', 'history'];
   return change ? ['change', 'review', ...(change.branch ? (['diff'] as Tab[]) : []), 'history'] : ['history'];

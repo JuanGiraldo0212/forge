@@ -1079,7 +1079,7 @@ a {
 .toast {
   position: fixed;
   right: 20px;
-  bottom: 190px;
+  bottom: 20px;
   max-width: 520px;
   display: flex;
   gap: 10px;

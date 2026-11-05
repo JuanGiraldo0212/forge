@@ -2,7 +2,7 @@
  * Document viewer and editor: idea, requirements, epic spec, change spec, review, diff, history.
  */
 import { useEffect, useState, type MouseEvent } from 'react';
-import type { ChangeState, Epic } from '../../../domain/epic.ts';
+import { stageDialog, type ChangeState, type DocStage, type Epic } from '../../../domain/epic.ts';
 import type { DocName, DocView, HistoryEntry, Outcome } from '../../shared/api.ts';
 import { renderMarkdown, splitFrontmatter } from '../markdown.ts';
 import type { Tab } from '../model.ts';
@@ -188,6 +188,7 @@ type Loaded =
 
 export const DocPanel = ({
   epic,
+  view,
   change,
   tabs,
   tab,
@@ -198,6 +199,7 @@ export const DocPanel = ({
   busy,
 }: {
   epic: Epic;
+  view: DocStage;
   change: ChangeState | undefined;
   tabs: readonly Tab[];
   tab: Tab;
@@ -282,7 +284,7 @@ export const DocPanel = ({
             )}
           </>
         )}
-        {tab === 'questions' && <QuestionsPanel key={epic.slug} epic={epic} busy={busy} onAnswered={onSaved} />}
+        {tab === 'questions' && <QuestionsPanel key={`${epic.slug}:${view}`} epic={epic} dialog={view === 'changes' ? undefined : stageDialog(epic, view)} busy={busy} onAnswered={onSaved} />}
         {current?.kind === 'review' && tab !== 'questions' && change && <Review change={change} onOpenUrl={onOpenUrl} />}
         {current?.kind === 'diff' && <Diff text={current.text} />}
         {current?.kind === 'history' && <History entries={current.entries} />}
