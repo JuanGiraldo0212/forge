@@ -13,7 +13,7 @@ import { createHandlers } from '../src/desktop/main/handlers.ts';
 import type { Session } from '../src/desktop/main/session.ts';
 import { fileSettings, type Keychain } from '../src/desktop/main/settings.ts';
 import { mergePaths } from '../src/desktop/main/shellEnv.ts';
-import { changeActions, currentTab, currentView, epicActions, initialState, reducer, runWouldDoSomething, stepState, tabsFor } from '../src/desktop/renderer/model.ts';
+import { changeActions, currentTab, currentView, epicActions, epicHint, initialState, reducer, runWouldDoSomething, stepState, tabsFor } from '../src/desktop/renderer/model.ts';
 import type { Outcome } from '../src/ui/actions.ts';
 import { EPIC_SPEC, makeDeps, makeRepo, REQUIREMENTS, scriptedAgent, sh, stageOf, tempDir } from './helpers.ts';
 
@@ -54,6 +54,14 @@ describe('desktop view model', () => {
     assert.equal(gate[0]?.kind, 'primary');
     assert.deepEqual(ids(epicActions(epic(), true)), ['stop']);
     assert.equal(stepState(epic({ status: 'awaiting_approval' }), 'requirements'), 'gate');
+  });
+
+  it('offers Restart stage when a run was cut off, in every stage', () => {
+    for (const stage of ['requirements', 'spec', 'changes'] as const) {
+      const stuck = epic({ stage, status: 'running' });
+      assert.equal(epicActions(stuck, false)[0]?.id, 'force-run', stage);
+      assert.match(epicHint(stuck, false), /Restart the stage/);
+    }
   });
 
   it('only makes Run primary when a run would do something', () => {

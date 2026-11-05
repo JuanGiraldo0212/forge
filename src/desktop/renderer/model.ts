@@ -229,6 +229,8 @@ export const epicActions = (e: Epic, busy: boolean): readonly ActionSpec[] => {
     return [{ id: 'run', label: e.stage === 'requirements' ? 'Analyze requirements' : 'Write epic spec', kind: 'primary' }, ...(e.stage === 'spec' ? [back] : []), abandon];
   }
 
+  // A drafting run that was cut off (app closed, crash) leaves the stage "running" with no agent attached.
+  if (e.status === 'running') return [{ id: 'force-run', label: 'Restart stage', kind: 'primary' }, back, abandon];
   const drafts = e.changes.filter((c) => c.status === 'draft').length;
   const runnable = runWouldDoSomething(e);
   return [
@@ -306,13 +308,13 @@ export const epicHint = (e: Epic, busy: boolean): string => {
   if (busy) return 'Agents are working on this epic.';
   if (e.stage === 'done') return 'Done: every change is merged.';
   if (e.stage === 'abandoned') return 'Abandoned.';
+  if (e.status === 'running') return 'Marked as running, but no agent is attached in this app. Restart the stage if it was interrupted.';
   if (e.stage !== 'changes') {
     if (e.status === 'awaiting_answers') {
       const n = e.dialog?.questions.filter((q) => !q.answer).length ?? 0;
       return `The ${e.stage === 'requirements' ? 'requirements' : 'epic spec'} agent paused with ${n} question${n === 1 ? '' : 's'} for you. Answer and it carries on.`;
     }
     if (e.status === 'awaiting_approval') return `Waiting for you: read the ${e.stage === 'requirements' ? 'requirements' : 'epic spec'}, edit it if needed, then approve or request changes.`;
-    if (e.status === 'running') return 'Marked as running, but no agent is attached in this app. Restart the stage if it crashed.';
     return e.pendingFeedback.length ? 'Your feedback is queued. Run the agent to regenerate.' : `Next: run the ${e.stage === 'requirements' ? 'requirements agent' : 'epic spec agent'}.`;
   }
   if (e.changes.length === 0) return 'Next: draft change specs from the approved epic spec.';
