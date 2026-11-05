@@ -53,7 +53,9 @@ export const fakeGitLab = (project: string): CodeHost & { readonly opened: { tit
   };
 };
 
-export type Script = (req: AgentRequest) => Promise<{ text?: string; structured?: unknown; error?: string } | undefined>;
+export type Script = (
+  req: AgentRequest,
+) => Promise<{ text?: string; structured?: unknown; error?: string; questions?: AgentOutcome['questions'] } | undefined>;
 
 /**
  * Behaves like the Agent SDK on cost: a resumed session reports its running total, not this call's spend.
@@ -69,7 +71,7 @@ export const scriptedAgent = (calls: AgentRequest[], script: Script): AgentRunne
       totals.set(sessionId, total);
       const r = (await script(req)) ?? {};
       if (r.error) return err({ port: 'agent', message: r.error, sessionCostUsd: total });
-      const outcome: AgentOutcome = { sessionId, text: r.text ?? '', structured: r.structured, sessionCostUsd: total, turns: 1 };
+      const outcome: AgentOutcome = { sessionId, text: r.text ?? '', structured: r.structured, sessionCostUsd: total, turns: 1, questions: r.questions };
       return ok(outcome);
     },
   };

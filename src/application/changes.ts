@@ -169,7 +169,7 @@ export type ChangesReport = {
   readonly build: BuildReport;
 };
 
-/** One `forge run` in the change specs stage: draft or redraft what needs it, then build what is approved. */
+/** One run in the change specs stage: draft or redraft what needs it, then build what is approved. */
 export const runChanges = async (deps: Deps, epic: Epic, force: boolean): Promise<Result<ChangesReport, DomainError>> => {
   const errors: string[] = [];
   let drafted: readonly string[] = [];

@@ -6,10 +6,11 @@
  *             network limited to an allowlist, credential files unreadable) and secrets stripped from env.
  * Worktrees are not containers; see README "Isolation" before running on untrusted input.
  */
-import { query, type Options, type SDKMessage, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
+import { createSdkMcpServer, query, tool, type Options, type SDKMessage, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod';
 import { relative } from 'node:path';
 import { err, ok } from '../domain/result.ts';
-import type { AgentRequest, AgentRunner } from '../ports/index.ts';
+import type { AgentQuestion, AgentRequest, AgentRunner } from '../ports/index.ts';
 
 const READ_TOOLS = ['Read', 'Grep', 'Glob'];
 const BUILD_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash'];
@@ -70,7 +71,60 @@ export const describeToolCalls = (message: SDKMessage, cwd: string): readonly st
   });
 };
 
-export const optionsFor = (req: AgentRequest, opts: ClaudeAgentOptions, abortController: AbortController): Options => {
+export const ASK_TOOL = 'mcp__forge__ask_human';
+
+/**
+ * The ask_human tool. It only records the questions; a PostToolUse hook then stops the run, so the
+ * agent never guesses an answer and the human can reply whenever they are ready.
+ */
+const askServer = (maxPerCall: number, asked: AgentQuestion[]) =>
+  createSdkMcpServer({
+    name: 'forge',
+    tools: [
+      tool(
+        'ask_human',
+        `Ask the human (the epic owner) up to ${maxPerCall} questions you cannot answer from the code. The run pauses after this call and resumes with their answers, so call it once with every question you need right now, then stop.`,
+        {
+          questions: z
+            .array(
+              z.object({
+                header: z.string().min(1).max(24).describe('2-3 words naming the topic, shown as a tab, e.g. "Priority shape"'),
+                question: z.string().describe('One short sentence ending with a question mark. Put context in "why", not here.'),
+                why: z.string().describe('Why it matters: what you would investigate or recommend differently, and what you found that raises it'),
+                options: z
+                  .array(
+                    z.object({
+                      label: z.string().min(1).max(60).describe('The choice in 1-6 words, e.g. "Three levels"'),
+                      description: z.string().min(1).describe('One line: what this choice means or implies in these repos'),
+                      recommended: z.boolean().optional().describe('true on the single option you would pick'),
+                    }),
+                  )
+                  .min(2)
+                  .max(4)
+                  .describe('2-4 distinct answers. "Something else" and "Let the agent decide" are always offered, so never add options like "Other" or "You decide".'),
+                multiSelect: z.boolean().optional().describe('true if several options can apply at once'),
+              }),
+            )
+            .min(1)
+            .max(maxPerCall),
+        },
+        async (args) => {
+          asked.push(
+            ...args.questions.map((q) => ({
+              header: q.header,
+              question: q.question,
+              why: q.why,
+              options: q.options ?? [],
+              multiSelect: q.multiSelect,
+            })),
+          );
+          return { content: [{ type: 'text', text: 'Recorded. The run pauses now; you will be resumed with the answers.' }] };
+        },
+      ),
+    ],
+  });
+
+export const optionsFor = (req: AgentRequest, opts: ClaudeAgentOptions, abortController: AbortController, asked: AgentQuestion[] = []): Options => {
   const base: Options = {
     abortController,
     pathToClaudeCodeExecutable: opts.executable,
@@ -96,6 +150,15 @@ export const optionsFor = (req: AgentRequest, opts: ClaudeAgentOptions, abortCon
   };
   // Permission rules take absolute paths as "//abs/path".
   const denyRead = (req.denyRead ?? []).map((p) => `Read(/${p.startsWith('/') ? p : `/${p}`})`);
+  if (req.mode === 'read' && req.ask)
+    return {
+      ...base,
+      tools: READ_TOOLS,
+      allowedTools: [...READ_TOOLS, ASK_TOOL],
+      disallowedTools: denyRead,
+      mcpServers: { forge: askServer(req.ask.maxPerCall, asked) },
+      hooks: { PostToolUse: [{ matcher: ASK_TOOL, hooks: [async () => ({ continue: false, stopReason: 'Waiting for the human to answer.' })] }] },
+    };
   if (req.mode === 'read') return { ...base, tools: READ_TOOLS, allowedTools: READ_TOOLS, disallowedTools: denyRead };
   return {
     ...base,
@@ -116,11 +179,12 @@ export const optionsFor = (req: AgentRequest, opts: ClaudeAgentOptions, abortCon
 export const claudeAgentRunner = (opts: ClaudeAgentOptions): AgentRunner => ({
   run: async (req) => {
     let result: SDKResultMessage | undefined;
+    const asked: AgentQuestion[] = [];
     const abortController = new AbortController();
     if (req.signal?.aborted) return err({ port: 'agent', message: 'stopped by the user', sessionCostUsd: 0 });
     req.signal?.addEventListener('abort', () => abortController.abort(), { once: true });
     try {
-      for await (const message of query({ prompt: req.prompt, options: optionsFor(req, opts, abortController) })) {
+      for await (const message of query({ prompt: req.prompt, options: optionsFor(req, opts, abortController, asked) })) {
         if (message.type === 'result') result = message;
         if (opts.onActivity) for (const line of describeToolCalls(message, req.cwd)) opts.onActivity(req.label, line, req.epic);
       }
@@ -129,6 +193,9 @@ export const claudeAgentRunner = (opts: ClaudeAgentOptions): AgentRunner => ({
       return err({ port: 'agent', message, sessionCostUsd: result?.total_cost_usd ?? 0 });
     }
     if (!result) return err({ port: 'agent', message: 'agent ended without a result', sessionCostUsd: 0 });
+    // A paused run (it asked) is not an error even if the SDK reports the stop oddly.
+    if (asked.length > 0)
+      return ok({ sessionId: result.session_id, text: '', sessionCostUsd: result.total_cost_usd, turns: result.num_turns, questions: asked });
     if (result.subtype !== 'success' || result.is_error) {
       const reason = result.subtype === 'success' ? result.result : `${result.subtype}: ${result.errors.join('; ')}`;
       return err({ port: 'agent', message: reason, sessionCostUsd: result.total_cost_usd });

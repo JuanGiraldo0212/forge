@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Creates a throwaway multi-repo setup to try forge on:
-#   <dir>/planning   the forge workspace (epics, team AGENTS.md, config) — run forge here
+#   <dir>/planning   the forge workspace (epics, team AGENTS.md, config) — open this in the app
 #   <dir>/api        a tiny todo module with tests
 #   <dir>/web        a tiny renderer that formats todos for display
 # Each repo has a local bare repo as "origin". Nothing talks to GitLab until you approve a change's code.
@@ -135,4 +135,4 @@ printf 'epics/**/events.jsonl merge=union\n' > "$dir/planning/.gitattributes"
 commit_repo planning "Forge workspace"
 
 echo "Demo ready in $dir"
-echo "Try: cd $dir/planning && forge"
+echo "Open it: npm start -- $dir/planning   (from the forge folder)"

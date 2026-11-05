@@ -69,6 +69,8 @@ export type ForgeApi = {
   readonly approve: (slug: string, changeId: string | null, note: string) => Promise<Outcome>;
   readonly approveAll: (slug: string, note: string) => Promise<Outcome>;
   readonly revise: (slug: string, changeId: string | null, note: string) => Promise<Outcome>;
+  /** Answers the agent's questions; when none are left open, the agent resumes right away. */
+  readonly answer: (slug: string, answers: readonly { readonly questionId: string; readonly text: string }[]) => Promise<Outcome>;
   readonly sendBack: (slug: string, to: 'explore' | 'spec', note: string) => Promise<Outcome>;
   readonly drop: (slug: string, changeId: string, note: string) => Promise<Outcome>;
   readonly assign: (slug: string, owner: string) => Promise<Outcome>;
@@ -112,6 +114,7 @@ export const METHODS = [
   'approve',
   'approveAll',
   'revise',
+  'answer',
   'sendBack',
   'drop',
   'assign',

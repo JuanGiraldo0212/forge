@@ -1,7 +1,7 @@
 /**
  * Prompt builders. Pure: every input is passed in, nothing is read here.
  */
-import type { ApprovedChange, ChangeState, Epic, Finding } from '../domain/epic.ts';
+import type { ApprovedChange, AskedQuestion, ChangeState, Epic, Finding } from '../domain/epic.ts';
 import { REQUIRED_SECTIONS } from '../domain/spec.ts';
 import type { CheckResult } from '../ports/index.ts';
 
@@ -71,9 +71,33 @@ ${reposList(repos)}
 
 `;
 
-export const explorePrompt = (i: DocInputs): string => `${header('explore', i)}${section('Idea', i.idea)}${section('Human guidance', guidance(i.epic))}${revision(i.epic, i.previous)}Investigate the repositories (read-only) to understand what this epic means across them. Do not design the final solution yet.
+export type ExploreInputs = DocInputs & {
+  readonly answered: readonly AskedQuestion[];
+  /** Question rounds the agent may still use; 0 = it must finish now. */
+  readonly roundsLeft: number;
+  readonly maxPerRound: number;
+};
 
-Respond with only a markdown document with these sections:
+const qa = (qs: readonly AskedQuestion[]): string =>
+  qs.map((q) => `- ${q.id}: ${q.text}\n  Answer (${q.answer?.by}): ${q.answer?.text}`).join('\n');
+
+const askingRules = (roundsLeft: number, maxPerRound: number): string =>
+  roundsLeft > 0
+    ? `## Asking the owner
+
+You can ask the epic's owner with the ask_human tool while you explore (up to ${maxPerRound} questions per call, ${roundsLeft} more call${roundsLeft === 1 ? '' : 's'} at most). The run pauses after the call and you are resumed with the answers, so:
+- Ask early when an answer changes where you look or what you recommend: an ambiguous goal, a product or team decision, which of two existing patterns to follow, a constraint that isn't in the code.
+- Never ask what the code, tests or docs can tell you. Look first.
+- Put every question you need right now into one call. For each: a 2-3 word header; the question in one short sentence; why it matters (context and what you found go here); and 2-4 distinct options, each a few-word label plus a one-line description. Mark the one you'd pick as recommended. Then stop and wait.
+
+`
+    : `## Asking the owner
+
+You can't ask more questions. Finish with what you know, and list anything still unresolved under "Open questions".
+
+`;
+
+const EXPLORATION_FORMAT = `Respond with only a markdown document with these sections:
 
 ## Summary
 What the epic means here, in a few sentences, and which repositories it touches.
@@ -84,13 +108,26 @@ Per repository: file paths with a one-line role each.
 ## Constraints and invariants
 Existing behavior, contracts between repositories (APIs, events, schemas) and tests that must keep working.
 
+## Decisions
+Each question the owner answered, the answer, and what it changed in your understanding. "None" if there were none.
+
 ## Options
 One to three approaches with tradeoffs. Mark the one you recommend and why.
 
 ## Risks
 
 ## Open questions
-Numbered questions only a human can answer, each followed by an empty "Answer:" line for the human to fill in.
+Only what is still unresolved, each followed by an empty "Answer:" line. "None" if nothing is.`;
+
+export const explorePrompt = (i: ExploreInputs): string => `${header('explore', i)}${section('Idea', i.idea)}${section('Human guidance', guidance(i.epic))}${section('Already answered by the owner', i.answered.length ? qa(i.answered) : undefined)}${revision(i.epic, i.previous)}Investigate the repositories (read-only) to understand what this epic means across them. Do not design the final solution yet.
+
+${askingRules(i.roundsLeft, i.maxPerRound)}When you have what you need, ${EXPLORATION_FORMAT.charAt(0).toLowerCase()}${EXPLORATION_FORMAT.slice(1)}
+`;
+
+/** Resumes a paused explore session with the owner's answers (and any revision feedback). */
+export const exploreContinuePrompt = (answers: readonly AskedQuestion[], feedback: readonly string[], roundsLeft: number, maxPerRound: number): string => `${section('The owner answered', answers.length ? qa(answers) : undefined)}${section('Feedback you must address', feedback.length ? bullets(feedback) : undefined)}Continue exploring with this in mind.
+
+${askingRules(roundsLeft, maxPerRound)}When you have what you need, ${EXPLORATION_FORMAT.charAt(0).toLowerCase()}${EXPLORATION_FORMAT.slice(1)}
 `;
 
 export const specPrompt = (i: DocInputs): string => `${header('epic spec', i)}${section('Idea', i.idea)}${section('Exploration (with human answers)', i.exploration)}${section('Human guidance', guidance(i.epic))}${revision(i.epic, i.previous)}Write the epic spec: the whole outcome across every repository. Change specs (one per merge request) are derived from it next, and the agents that implement them see this spec, so be precise.

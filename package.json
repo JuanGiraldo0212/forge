@@ -1,27 +1,20 @@
 {
   "name": "forge",
   "version": "0.1.0",
-  "description": "Opinionated idea-to-merge-request harness with human gates",
+  "description": "Desktop app that takes an epic from idea to merged merge requests, with a human decision at every step",
   "scripts": {
-    "forge": "node --import tsx src/cli/main.ts",
+    "start": "electron-vite build && node scripts/start.mjs",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "package": "electron-vite build && electron-builder --dir",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test \"test/**/*.test.ts\" \"test/**/*.test.tsx\"",
     "check": "npm run typecheck && npm test",
-    "demo": "bash scripts/demo.sh",
-    "desktop:dev": "electron-vite dev",
-    "desktop:build": "electron-vite build",
-    "desktop:start": "electron-vite preview",
-    "desktop:package": "electron-vite build && electron-builder --dir"
+    "demo": "bash scripts/demo.sh"
   },
   "type": "module",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.317",
-    "dompurify": "^3.4.17",
-    "ink": "^8.0.0",
-    "marked": "^18.1.1",
-    "react": "^19.3.1",
-    "react-dom": "^19.3.1",
-    "tsx": "^4.23.15",
     "yaml": "^2.9.1",
     "zod": "^4.6.7"
   },
@@ -30,17 +23,18 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
+    "dompurify": "^3.4.17",
     "electron": "^43.8.2",
     "electron-builder": "^26.18.0",
     "electron-vite": "^6.0.0",
-    "ink-testing-library": "^4.0.0",
+    "marked": "^18.1.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.3.4"
   },
   "private": true,
-  "bin": {
-    "forge": "./bin/forge.mjs"
-  },
   "engines": {
     "node": ">=24"
   },

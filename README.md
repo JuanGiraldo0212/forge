@@ -41,15 +41,30 @@ At every step you can do one of the following:
 - **Send back** to explore or the epic spec.
 - **Drop** a single change.
 
-## Where to run forge
+## Interactive exploration
+
+The explore agent doesn't save its questions for the end. When an answer would change where it
+looks or what it recommends, it asks the epic's owner mid-run (`ask_human`, up to 3 questions per
+round, each with why it matters and suggested answers) and the run **pauses** with its session saved.
+Answer whenever you like: forge resumes the *same* agent session with your answers, and it carries
+on exploring, asking again if needed (`explore.maxQuestionRounds`, default 4). It then writes the
+exploration with a **Decisions** section. "Open questions" keeps only what's still unresolved.
+
+- **Answering:** the *Questions* tab shows one question at a time: option cards with descriptions and
+  the agent's recommendation, *Something else* for your own words, and *Let the agent decide*. Use
+  `1`–`9` to pick and Enter to go on; *Send answers & continue* resumes the agent.
+- **Revisions** continue the same conversation, so the agent keeps everything it learned.
+- **Turning it off:** set `explore.interactive: false` in `.forge/config.yaml`.
+
+## Where workspaces live
 
 **Several repos** (for example a frontend and a backend): create a small **planning repo** for the
-team and run forge there. It holds the epics, the team-wide `AGENTS.md` (how the repos fit together)
+team and open it in the app as the workspace. It holds the epics, the team-wide `AGENTS.md` (how the repos fit together)
 and `.forge/config.yaml`, which lists the code repos.
 
 ```
 ~/code/
-  templo-epics/          ← forge runs here (forge init --workspace), committed to GitLab
+  templo-epics/          ← open this in forge (Set up a new workspace…), committed to GitLab
     .forge/config.yaml   repos: backend (../templo-backend), frontend (../templo)
     .forge/rules/        learned rules, read by every agent
     AGENTS.md            product and architecture across repos
@@ -66,7 +81,7 @@ repos:
   backend: { path: ~/work/templo-backend }
 ```
 
-**One repo**: run `forge init` inside it; the config lists that repo with `path: .`.
+**One repo**: set it up as the workspace itself, and add it as a repo with path `.`.
 
 **From the desktop app:** use *Set up a new workspace…* on the welcome screen, or *Edit* next to the
 repo chips (also in ⚙ Settings). You can add, edit and remove repos there. Picking a folder fills in:
@@ -78,7 +93,7 @@ It also warns when the remote isn't on your GitLab host. Shared values are saved
 `.forge/config.yaml`, keeping your comments, and per-machine paths to `.forge/local.yaml`. A repo
 can't be removed while unfinished changes still build in it.
 
-**Commit `epics/`** so the whole team sees every epic, its specs and its history. `forge init` adds
+**Commit `epics/`** so the whole team sees every epic, its specs and its history. Workspace setup adds
 `epics/**/events.jsonl merge=union` to `.gitattributes`. If two people act on the same epic, git
 keeps both sides' events, and forge orders them by time.
 
@@ -102,18 +117,14 @@ keeps both sides' events, and forge orders them by time.
 ## Quick start
 
 ```bash
-npm install && npm link          # puts `forge` on PATH (Node >= 24; runs the TypeScript sources via tsx)
-npm run demo -- ~/forge-demo     # throwaway planning + api + web repos
-cd ~/forge-demo/planning && forge
+npm install
+npm run demo -- ~/forge-demo          # throwaway planning + api + web repos
+npm start -- ~/forge-demo/planning    # builds and opens the app on that workspace
 ```
 
-For real repos:
-
-```bash
-cd ~/code/templo-epics && forge init --workspace   # then edit .forge/config.yaml: repos, projects, checks
-export GITLAB_TOKEN=...                            # api scope; only the forge process sees it
-forge
-```
+For your own repos, run `npm start`, choose **Set up a new workspace…**, pick your planning repo (an
+empty git repo is fine), and add your code repos. Export `GITLAB_TOKEN` (api scope) before starting,
+or save it under ⚙ Settings; only forge sees it, never the agents.
 
 ## Desktop app
 
@@ -122,15 +133,15 @@ repo chips, rendered and editable documents, review findings, a colored diff, hi
 agent activity with a **Stop** button.
 
 ```bash
-npm run desktop:build                 # once, and after pulling changes
-forge desktop                         # from a workspace: opens the app on it
-npm run desktop:dev                   # hot-reloading development
-npm run desktop:package               # unpacked build in dist-desktop/ (drop --dir in the script for AppImage/deb/dmg/nsis)
+npm start                             # build and open (last workspace, or the welcome screen)
+npm start -- <workspace path>         # open on a specific workspace
+npm run dev                           # hot-reloading development
+npm run package                       # unpacked build in dist-desktop/ (drop --dir in the script for AppImage/deb/dmg/nsis)
 ```
 
-- **One core:** the main process runs the same domain, use cases and adapters as the CLI and TUI. The
-  renderer only calls a typed, validated IPC API (`src/desktop/shared/api.ts`). User actions are shared
-  with the TUI (`src/ui/actions.ts`).
+- **One core:** the main process runs the domain, use cases and adapters; the renderer only calls a
+  typed, validated IPC API (`src/desktop/shared/api.ts`). The actions behind the buttons are in
+  `src/ui/actions.ts`.
 - **Renderer locked down:** context isolation, sandbox, no Node integration, a strict CSP in packaged
   builds, no navigation or new windows, and only http(s) links (opened in the browser). Agent-written
   markdown is sanitized (DOMPurify). Every IPC argument is checked against a schema.
@@ -141,66 +152,17 @@ npm run desktop:package               # unpacked build in dist-desktop/ (drop --
 - **Packaged builds:** the Agent SDK's native binary is unpacked from the asar archive, and the app
   points the SDK at it. A Linux build is about 680 MB, half of which is that binary.
 - **Recent Ubuntu (24.04+):** AppArmor blocks the user namespaces that Chromium's sandbox needs, and
-  Electron aborts with a `chrome-sandbox ... mode 4755` error. `forge desktop` detects this and prints
+  Electron aborts with a `chrome-sandbox ... mode 4755` error. `npm start` detects this and prints
   the fix: an AppArmor profile for forge's Electron binary (recommended), or a setuid-root
   `chrome-sandbox`. Don't use `--no-sandbox`. The renderer shows agent-written content, and the
   sandbox is part of its protection. The `.deb` package should set up the helper when it's installed.
 - **Agents stop when the app quits.** It asks first while agents are running. Only one action runs per
   epic at a time.
 
-## TUI
-
-`forge` (or `forge tui`) opens a full-screen dashboard.
-
-- **Left:** epics, with a marker (`●` needs you, a spinner while running, `✓` done) and the owner.
-  `m` toggles between your epics and all epics.
-- **Right, top:** the selected epic's stages, a hint for what to do next, and its changes with
-  status, repo and dependencies.
-- **Right, bottom:** the document that needs a decision: the exploration, the epic spec, the
-  selected change spec (with anything blocking its approval listed at the bottom), or the change's
-  review findings.
-- **Bottom strip:** live agent activity, tagged per change.
-
-| Key | Does |
-|---|---|
-| `r` / `R` | run: next stage, or draft/redraft change specs and build approved changes / force-run after a crash |
-| `a` | approve the open gate, or the selected change (draft → spec approved; reviewed → code approved, MR opened) |
-| `A` | approve every draft change spec that passes its checks |
-| `v` | revise: the stage, the selected change (spec or code), or the whole change set |
-| `x` / `X` | drop the selected change / abandon the epic |
-| `e` | edit the document or draft change spec in `$EDITOR` |
-| `1` `2` `3` `4` | idea, exploration, epic spec, selected change spec |
-| `t` `d` `l` | change review, change diff, event log |
-| `n` `o` `s` | new epic, change owner, sync MR state from GitLab |
-| `Tab` `↑↓` `?` `q` | focus epics → changes → viewer, move, help, quit |
-
-Agents run inside the TUI process. Quitting stops them (forge asks first). Afterwards, `R`
-force-restarts, and interrupted changes are handed back to you. The TUI also picks up changes made
-by `forge` commands in other terminals.
-
-## CLI
-
-```
-forge init [--workspace]
-forge new "<title>" [-m <idea> | --file <path>] [--owner <email>]
-forge list [--mine]
-forge status <epic>
-forge show <epic> [--change <id>]
-forge run <epic> [--force]
-forge approve <epic> [--change <id>] [-m <note>]     no --change in change specs = approve all drafts
-forge revise <epic> -m <feedback> [--change <id>]    no --change in change specs = feedback on the whole set
-forge drop <epic> <change> -m <why>
-forge back <epic> <explore|spec> -m <why>
-forge assign <epic> <owner>
-forge sync <epic>
-forge log <epic>
-forge abandon <epic> -m <why>
-```
-
 ## Architecture
 
 Hexagonal, functional TypeScript. There are no classes. Ports are records of functions, adapters
-are factories that return them, and the only place they are wired together is `src/cli/compose.ts`.
+are factories that return them, and the only place they are wired together is `src/app/compose.ts`.
 
 ```
 src/domain/        pure: event-sourced Epic aggregate (epic.ts), change spec parsing/validation and
@@ -208,9 +170,8 @@ src/domain/        pure: event-sourced Epic aggregate (epic.ts), change spec par
 src/ports/         interfaces: EpicStore, ArtifactStore, RepoContext, AgentRunner, Vcs, CodeHost, CheckRunner
 src/application/   use cases: stages (explore, epic spec), changes (draft/approve/drop), build, prompts, renderers
 src/adapters/      fs, git (worktrees), gitlab (REST v4), claudeAgent (Agent SDK), process (checks)
-src/cli/           CLI and the composition root (one Vcs + CodeHost + RepoContext per configured repo)
-src/tui/           Ink TUI: pure state + key map (state.ts), effects (commands.ts), components (App.tsx)
-src/ui/            user actions shared by the TUI and the desktop app
+src/app/           composition root (one Vcs + CodeHost per configured repo) and workspace setup
+src/ui/            the actions behind the app's buttons
 src/desktop/       Electron: main (session, validated IPC handlers, settings), preload, renderer (React)
 ```
 
@@ -251,7 +212,7 @@ running total, so forge records only what each run added.
 
 ## Verified
 
-- `npm run check`: typecheck plus 60 tests, covering:
+- `npm run check`: typecheck plus 59 tests, covering:
   - the domain rules: lifecycle, change specs, cross-repo dependencies, cost;
   - end-to-end runs with real git and bare remotes:
     - a two-repo epic: per-change approval, a single redraft, a dropped change, a cross-repo
@@ -260,8 +221,8 @@ running total, so forge records only what each run added.
     - escalation then rework;
     - the revert test;
     - an agent crash;
-  - the TUI's state and key map, plus a rendered TUI driven by keystrokes from idea to approved
-    change specs;
+  - interactive exploration: pause, partial answers, resume in the same session, the round limit,
+    revisions continuing the conversation, and cost across resumes;
   - planning snapshots: a teammate's push shows up and local edits don't; the offline fallbacks;
     `CLAUDE.md` loading; the deny rules;
   - repo config editing that keeps comments and validates like startup, and repo detection from a
@@ -286,5 +247,5 @@ running total, so forge records only what each run added.
 - Reviewers from a different model family, and several specialized reviewers.
 - A retro stage that turns escalations and findings into proposed rule files.
 - Stacked branches for dependent changes (today a dependent waits for its dependency to merge).
-- A lock against two `forge run` processes on the same epic (the desktop app already allows only one action per epic).
+- A lock against two app windows acting on the same epic (one window already allows only one action per epic).
 - Desktop: macOS signing and notarization, Windows signing, auto-update, an app icon. The build sandbox on Windows is untested.

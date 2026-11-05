@@ -1,13 +1,14 @@
 /**
  * Epic creation, the single-document stages (explore, epic spec) and their gates.
  */
-import { ARTIFACT_FILE, type DocStage, type Epic, type GatedStage } from '../domain/epic.ts';
-import { canSendBack, openGate, runnableStage, type DomainError } from '../domain/lifecycle.ts';
+import { ARTIFACT_FILE, openQuestions, type AskedQuestion, type DocStage, type Epic, type GatedStage, type Question } from '../domain/epic.ts';
+import { canAnswer, canSendBack, openGate, runnableStage, type DomainError } from '../domain/lifecycle.ts';
+import { runCost } from '../domain/policy.ts';
 import { err, ok, type Result } from '../domain/result.ts';
 import { lintSpec } from '../domain/spec.ts';
 import { emit, emitAsForge, loadEpic, type Deps } from './deps.ts';
 import { planningRequest, preparePlanning, snapshotRecord, type PlanningView } from './planning.ts';
-import { explorePrompt, extractMarkdown, specPrompt, type DocInputs } from './prompts.ts';
+import { exploreContinuePrompt, explorePrompt, extractMarkdown, specPrompt, type DocInputs } from './prompts.ts';
 
 export const IDEA_FILE = 'idea.md';
 export const CHANGES_DIR = 'changes';
@@ -66,35 +67,106 @@ export const gateIssues = async (deps: Deps, slug: string, stage: GatedStage): P
   return [];
 };
 
-export type StageRun = { readonly stage: GatedStage; readonly artifact: string; readonly issues: readonly string[] };
+export type StageRun =
+  | { readonly kind: 'artifact'; readonly stage: GatedStage; readonly artifact: string; readonly issues: readonly string[] }
+  | { readonly kind: 'questions'; readonly stage: GatedStage; readonly questions: readonly AskedQuestion[] };
 
+/**
+ * Runs a single-document stage. Explore is a conversation: the agent may pause with questions, and the
+ * next run resumes the same session with the owner's answers (and any revision feedback) until it
+ * writes the exploration. The epic spec runs in one go.
+ */
 export const runGatedStage = async (deps: Deps, epic: Epic, stage: GatedStage): Promise<Result<StageRun, DomainError>> => {
+  const settings = deps.config.explore;
+  const interactive = stage === 'explore' && settings.interactive;
+  const dialog = epic.dialog?.stage === stage ? epic.dialog : undefined;
+  const resume = interactive && dialog?.sessionId ? dialog : undefined;
+  const roundsLeft = interactive ? Math.max(0, settings.maxQuestionRounds - (dialog?.rounds ?? 0)) : 0;
+  const answered = dialog?.questions.filter((q) => q.answer) ?? [];
+  const toDeliver = resume ? answered.filter((q) => q.round > resume.delivered) : [];
+
   deps.log.info(`Refreshing repo snapshots for "${epic.slug}"...`);
   const view = await preparePlanning(deps);
-  await emitAsForge(deps, epic.slug, [{ type: 'StageStarted', stage, snapshots: snapshotRecord(view) }]);
-  deps.log.info(`Running ${stage} agent for "${epic.slug}"...`);
+  await emitAsForge(deps, epic.slug, [
+    { type: 'StageStarted', stage, snapshots: snapshotRecord(view), deliveredRound: resume ? resume.rounds : undefined },
+  ]);
+  deps.log.info(`${resume ? 'Resuming' : 'Running'} ${stage} agent for "${epic.slug}"...`);
 
   const inputs = await docInputs(deps, epic, view, ARTIFACT_FILE[stage]);
-  const result = await deps.agent.run(
-    await planningRequest(deps, view, epic.slug, stage, stage === 'explore' ? explorePrompt(inputs) : specPrompt(inputs)),
-  );
+  const prompt = resume
+    ? exploreContinuePrompt(toDeliver, epic.pendingFeedback, roundsLeft, settings.maxQuestionsPerRound)
+    : stage === 'explore'
+      ? explorePrompt({ ...inputs, answered, roundsLeft, maxPerRound: settings.maxQuestionsPerRound })
+      : specPrompt(inputs);
+  const result = await deps.agent.run({
+    ...(await planningRequest(deps, view, epic.slug, stage, prompt)),
+    resume: resume?.sessionId,
+    ask: roundsLeft > 0 ? { maxPerCall: settings.maxQuestionsPerRound } : undefined,
+  });
+  const baseline = resume?.sessionCostUsd;
 
   if (!result.ok) {
     await emitAsForge(deps, epic.slug, [
-      { type: 'StageFailed', stage, reason: result.error.message, costUsd: result.error.sessionCostUsd },
+      { type: 'StageFailed', stage, reason: result.error.message, costUsd: runCost(result.error.sessionCostUsd, baseline) },
     ]);
     return err({ code: 'agent_failed', message: `${stage} agent failed: ${result.error.message}` });
   }
+  const costUsd = runCost(result.value.sessionCostUsd, baseline);
+
+  if (result.value.questions?.length) {
+    const first = (dialog?.questions.length ?? 0) + 1;
+    const questions: Question[] = result.value.questions.map((q, i) => ({
+      id: `Q${first + i}`,
+      header: q.header,
+      text: q.question,
+      why: q.why,
+      options: q.options,
+      multiSelect: q.multiSelect,
+    }));
+    await emitAsForge(deps, epic.slug, [
+      { type: 'QuestionsAsked', stage, questions, sessionId: result.value.sessionId, sessionCostUsd: result.value.sessionCostUsd, costUsd },
+    ]);
+    return ok({ kind: 'questions', stage, questions: questions.map((q) => ({ ...q, round: (dialog?.rounds ?? 0) + 1 })) });
+  }
 
   await deps.artifacts.write(epic.slug, ARTIFACT_FILE[stage], extractMarkdown(result.value.text));
-  // Stage agents always start a fresh session, so the session total is this run's spend.
-  await emitAsForge(deps, epic.slug, [{ type: 'ArtifactProduced', stage, costUsd: result.value.sessionCostUsd }]);
+  await emitAsForge(deps, epic.slug, [
+    {
+      type: 'ArtifactProduced',
+      stage,
+      costUsd,
+      // Keep the explore session, so a revision continues the conversation instead of starting over.
+      ...(interactive ? { sessionId: result.value.sessionId, sessionCostUsd: result.value.sessionCostUsd } : {}),
+    },
+  ]);
 
   return ok({
+    kind: 'artifact',
     stage,
     artifact: deps.artifacts.pathOf(epic.slug, ARTIFACT_FILE[stage]),
     issues: await gateIssues(deps, epic.slug, stage),
   });
+};
+
+/** Records the owner's answers. Once every question is answered, the next run resumes the agent. */
+export const answerQuestions = async (
+  deps: Deps,
+  slug: string,
+  answers: readonly { readonly questionId: string; readonly text: string }[],
+): Promise<Result<{ readonly remaining: readonly string[] }, DomainError>> => {
+  const loaded = await loadEpic(deps, slug);
+  if (!loaded.ok) return loaded;
+  if (answers.length === 0) return err({ code: 'no_answers', message: 'No answers given.' });
+  const events = [];
+  for (const a of answers) {
+    const can = canAnswer(loaded.value, a.questionId);
+    if (!can.ok) return can;
+    if (!a.text.trim()) return err({ code: 'empty_answer', message: `The answer to ${a.questionId} is empty.` });
+    events.push({ type: 'QuestionAnswered' as const, stage: can.value, questionId: a.questionId, answer: a.text.trim() });
+  }
+  await emit(deps, slug, events);
+  const after = await loadEpic(deps, slug);
+  return ok({ remaining: after.ok ? openQuestions(after.value).map((q) => q.id) : [] });
 };
 
 export const runnable = async (
@@ -104,7 +176,7 @@ export const runnable = async (
 ): Promise<Result<{ readonly epic: Epic; readonly stage: DocStage }, DomainError>> => {
   const loaded = await loadEpic(deps, slug);
   if (!loaded.ok) return loaded;
-  // A crashed run leaves the stage "running"; --force lets the human restart it.
+  // A crashed run leaves the stage "running"; a forced run lets the human restart it.
   const epic: Epic = force && loaded.value.status === 'running' ? { ...loaded.value, status: 'ready' } : loaded.value;
   const stage = runnableStage(epic);
   return stage.ok ? ok({ epic, stage: stage.value }) : stage;

@@ -13,11 +13,13 @@ const fail = (code: string, message: string): Result<never, DomainError> => err(
 const live = (e: Epic): Result<Epic, DomainError> =>
   e.stage === 'done' || e.stage === 'abandoned' ? fail('terminal', `Epic "${e.slug}" is ${e.stage}.`) : ok(e);
 
-/** Which stage `forge run` should execute right now. */
+/** Which stage a run should execute right now. */
 export const runnableStage = (e: Epic): Result<DocStage, DomainError> => {
   const l = live(e);
   if (!l.ok) return l;
   if (e.status === 'running') return fail('already_running', `Stage "${e.stage}" is already running.`);
+  if (e.status === 'awaiting_answers')
+    return fail('questions_open', `The ${e.stage} agent is waiting for answers to its questions. Answer them to continue.`);
   if (e.stage === 'changes') return ok('changes');
   if (e.status === 'awaiting_approval')
     return fail('gate_open', `The ${e.stage} gate is waiting for approval. Approve or revise it first.`);
@@ -30,6 +32,16 @@ export const openGate = (e: Epic): Result<GatedStage, DomainError> => {
   if (!l.ok) return l;
   if ((e.stage === 'explore' || e.stage === 'spec') && e.status === 'awaiting_approval') return ok(e.stage);
   return fail('no_gate', `No explore or epic spec gate is open on "${e.slug}" (stage ${e.stage}, ${e.status}).`);
+};
+
+/** A question the agent asked and nobody has answered yet. */
+export const canAnswer = (e: Epic, questionId: string): Result<GatedStage, DomainError> => {
+  const l = live(e);
+  if (!l.ok) return l;
+  const q = e.dialog?.questions.find((x) => x.id === questionId);
+  if (!e.dialog || !q) return fail('unknown_question', `No question "${questionId}" on "${e.slug}".`);
+  if (q.answer) return fail('answered', `${questionId} is already answered.`);
+  return ok(e.dialog.stage);
 };
 
 /** Plan-level feedback ("split C2", "add a migration change") applies in the changes stage. */

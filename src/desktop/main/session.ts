@@ -6,7 +6,7 @@ import { watch, type FSWatcher } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { basename } from 'node:path';
 import type { Deps } from '../../application/deps.ts';
-import { composeDeps, findRepoRoot } from '../../cli/compose.ts';
+import { composeDeps, findRepoRoot } from '../../app/compose.ts';
 import { err, ok, type Result } from '../../domain/result.ts';
 import type { ActivityLine, WorkspaceInfo } from '../shared/api.ts';
 import type { Settings } from './settings.ts';

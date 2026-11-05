@@ -1,5 +1,5 @@
 /**
- * Composition root shared by the CLI and the TUI: the only place that knows which adapter backs which port.
+ * Composition root: the only place that knows which adapter backs which port.
  */
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -53,7 +53,7 @@ export type ComposeOptions = {
 
 export const composeDeps = async (root: string, sinks: Sinks, options: ComposeOptions = {}): Promise<Result<Composed, string>> => {
   const raw = await readConfigFile(root);
-  if (raw === undefined) return err('no .forge/config.yaml. Run "forge init" (in a code repo) or "forge init --workspace" (in a planning repo).');
+  if (raw === undefined) return err(`${root} has no .forge/config.yaml. Use "Set up a new workspace…" to create one.`);
   const shared = parseYamlFile(raw, '.forge/config.yaml');
   if (!shared.ok) return shared;
   const local = parseYamlFile(await readLocalConfigFile(root), '.forge/local.yaml');

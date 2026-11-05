@@ -16,7 +16,7 @@ export const Stepper = ({ epic, busy }: { epic: Epic; busy: boolean }) => (
         <li key={stage} className={`step step-${state}`}>
           <span className="step-icon">{state === 'current' && busy ? <Spinner /> : state === 'done' ? '✓' : state === 'gate' ? '◆' : state === 'current' ? '●' : '○'}</span>
           {STAGE_LABEL[stage]}
-          {state === 'gate' && <span className="step-note">your review</span>}
+          {state === 'gate' && <span className="step-note">{epic.status === 'awaiting_answers' ? 'your answers' : 'your review'}</span>}
         </li>
       );
     })}

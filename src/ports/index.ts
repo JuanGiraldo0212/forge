@@ -56,6 +56,19 @@ export type AgentRequest = {
   readonly resume?: string;
   /** When set, the agent must answer with JSON matching this schema. */
   readonly outputSchema?: Record<string, unknown>;
+  /**
+   * Lets the agent ask the human questions mid-run. Asking ends the run (with the session kept), and the
+   * outcome carries the questions; the caller resumes the session with the answers later.
+   */
+  readonly ask?: { readonly maxPerCall: number };
+};
+
+export type AgentQuestion = {
+  readonly header?: string;
+  readonly question: string;
+  readonly why: string;
+  readonly options: readonly { readonly label: string; readonly description?: string; readonly recommended?: boolean }[];
+  readonly multiSelect?: boolean;
 };
 
 export type AgentOutcome = {
@@ -68,6 +81,8 @@ export type AgentOutcome = {
    */
   readonly sessionCostUsd: number;
   readonly turns: number;
+  /** Set when the agent paused to ask; `text` is then not a finished answer. */
+  readonly questions?: readonly AgentQuestion[];
 };
 
 export type AgentRunner = {

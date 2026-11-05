@@ -59,7 +59,7 @@ const setOrDelete = (doc: Document, path: readonly (string | number)[], value: u
 };
 
 /** Header for a workspace created from the desktop app. */
-export const NEW_WORKSPACE_CONFIG = `# Forge workspace. Commit this file. Run forge from this repo.
+export const NEW_WORKSPACE_CONFIG = `# Forge workspace. Commit this file. Open this repo in the forge app.
 # Repo paths are relative to this repo; set your own in .forge/local.yaml (not committed).
 epicsDir: epics
 

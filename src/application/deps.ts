@@ -41,7 +41,7 @@ export type EventBody = EpicEvent extends infer E ? (E extends EpicEvent ? Omit<
 
 export const loadEpic = async (deps: Deps, slug: string): Promise<Result<Epic, DomainError>> => {
   const epic = replay(await deps.epics.load(slug));
-  return epic ? ok(epic) : err({ code: 'not_found', message: `No epic "${slug}". Run "forge list".` });
+  return epic ? ok(epic) : err({ code: 'not_found', message: `No epic "${slug}".` });
 };
 
 export const emit = async (

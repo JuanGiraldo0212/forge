@@ -1,11 +1,11 @@
 /**
- * User actions shared by the interactive front ends (TUI, desktop). Each calls the use cases and returns
- * a one-line outcome to show the user. No rendering, no front-end state.
+ * User actions behind the desktop app's buttons. Each calls the use cases and returns a one-line outcome
+ * to show the user. No rendering, no front-end state.
  */
 import { syncMergeRequests } from '../application/build.ts';
 import { approveAllDrafts, approveChange, dropChange, reviseChange, revisePlan, runChanges } from '../application/changes.ts';
 import { loadEpic, type Deps } from '../application/deps.ts';
-import { abandon, approveStage, assignOwner, createEpic, reviseStage, runGatedStage, runnable, sendBack } from '../application/stages.ts';
+import { abandon, answerQuestions, approveStage, assignOwner, createEpic, reviseStage, runGatedStage, runnable, sendBack } from '../application/stages.ts';
 import { STAGE_LABEL, type Epic } from '../domain/epic.ts';
 import type { Result } from '../domain/result.ts';
 
@@ -52,6 +52,11 @@ export const runAction = async (deps: Deps, slug: string, force: boolean): Promi
   }
   const run = await runGatedStage(deps, epic, stage);
   if (!run.ok) return failed(run.error.message);
+  if (run.value.kind === 'questions')
+    return done(
+      `The ${STAGE_LABEL[stage]} agent has ${run.value.questions.length} question${run.value.questions.length > 1 ? 's' : ''} for you: ${run.value.questions.map((q) => `${q.id}: ${q.text}`).join(' · ')}`,
+      'info',
+    );
   return run.value.issues.length
     ? done(`${STAGE_LABEL[stage]} ready, but it can't be approved yet: ${run.value.issues.join('; ')}`, 'error')
     : done(`${STAGE_LABEL[stage]} ready for your review.`);
@@ -88,6 +93,22 @@ export const reviseAction = async (deps: Deps, slug: string, changeId: string | 
   if (epic.ok && epic.value.stage === 'changes')
     return fromResult(await revisePlan(deps, slug, note), () => 'Unapproved change specs will be redrafted on the next run.');
   return fromResult(await reviseStage(deps, slug, note), (stage) => `${STAGE_LABEL[stage]} will be regenerated on the next run.`);
+};
+
+/**
+ * Records answers; once none are left open, resumes the paused agent straight away so the exploration
+ * carries on as a conversation.
+ */
+export const answerAction = async (
+  deps: Deps,
+  slug: string,
+  answers: readonly { readonly questionId: string; readonly text: string }[],
+  continueRun = true,
+): Promise<Outcome> => {
+  const r = await answerQuestions(deps, slug, answers);
+  if (!r.ok) return failed(r.error.message);
+  if (r.value.remaining.length) return done(`Answered. Still open: ${r.value.remaining.join(', ')}.`, 'info');
+  return continueRun ? runAction(deps, slug, false) : done('Answered. Run the agent to continue.', 'success');
 };
 
 export const sendBackAction = async (deps: Deps, slug: string, to: string, note: string): Promise<Outcome> =>

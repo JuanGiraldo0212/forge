@@ -6,12 +6,14 @@ import type { ChangeState, Epic } from '../../../domain/epic.ts';
 import type { DocName, DocView, HistoryEntry, Outcome } from '../../shared/api.ts';
 import { renderMarkdown, splitFrontmatter } from '../markdown.ts';
 import type { Tab } from '../model.ts';
+import { QuestionsPanel } from './QuestionsPanel.tsx';
 import { Button, Chip } from './ui.tsx';
 
 const DOC_OF: Partial<Record<Tab, DocName>> = { idea: 'idea.md', exploration: 'exploration.md', spec: 'epic-spec.md' };
 
 const TAB_LABEL: Record<Tab, string> = {
   idea: 'Idea',
+  questions: 'Questions',
   exploration: 'Exploration',
   spec: 'Epic spec',
   change: 'Change spec',
@@ -192,6 +194,7 @@ export const DocPanel = ({
   onTab,
   onSaved,
   onOpenUrl,
+  busy,
 }: {
   epic: Epic;
   change: ChangeState | undefined;
@@ -200,6 +203,7 @@ export const DocPanel = ({
   onTab: (t: Tab) => void;
   onSaved: (o: Outcome) => void;
   onOpenUrl: (url: string) => void;
+  busy: boolean;
 }) => {
   const [loaded, setLoaded] = useState<{ key: string; value: Loaded } | undefined>();
   const [draft, setDraft] = useState<string | undefined>();
@@ -222,7 +226,7 @@ export const DocPanel = ({
     };
   }, [key]);
 
-  const tabs: Tab[] = ['idea', 'exploration', 'spec', ...(change ? (['change', 'review', ...(change.branch ? (['diff'] as Tab[]) : [])] as Tab[]) : []), 'history'];
+  const tabs: Tab[] = ['idea', ...(epic.dialog?.questions.length ? (['questions'] as Tab[]) : []), 'exploration', 'spec', ...(change ? (['change', 'review', ...(change.branch ? (['diff'] as Tab[]) : [])] as Tab[]) : []), 'history'];
   const current = loaded?.key === key ? loaded.value : undefined;
 
   const save = async () => {
@@ -239,6 +243,7 @@ export const DocPanel = ({
         {tabs.map((t) => (
           <button key={t} role="tab" aria-selected={t === tab} className={t === tab ? 'on' : ''} onClick={() => onTab(t)}>
             {t === 'change' || t === 'review' || t === 'diff' ? `${TAB_LABEL[t]} ${change?.id ?? ''}` : TAB_LABEL[t]}
+            {t === 'questions' && epic.status === 'awaiting_answers' ? <span className="badge">{epic.dialog?.questions.filter((q) => !q.answer).length}</span> : null}
           </button>
         ))}
         {current?.kind === 'doc' && current.view.editable && draft === undefined && (
@@ -276,7 +281,8 @@ export const DocPanel = ({
             )}
           </>
         )}
-        {current?.kind === 'review' && change && <Review change={change} onOpenUrl={onOpenUrl} />}
+        {tab === 'questions' && <QuestionsPanel key={epic.slug} epic={epic} busy={busy} onAnswered={onSaved} />}
+        {current?.kind === 'review' && tab !== 'questions' && change && <Review change={change} onOpenUrl={onOpenUrl} />}
         {current?.kind === 'diff' && <Diff text={current.text} />}
         {current?.kind === 'history' && <History entries={current.entries} />}
       </div>

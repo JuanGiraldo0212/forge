@@ -82,6 +82,8 @@ export const App = () => {
         return dispatch({ type: 'dialog', dialog: { kind: 'assign', slug, owner: epic.owner } });
       case 'stop':
         return api().stop(slug);
+      case 'answer':
+        return dispatch({ type: 'tab', tab: 'questions' });
     }
     if (a.note && ref.current.dialog?.kind !== 'note') return dispatch({ type: 'dialog', dialog: { kind: 'note', action: a, slug } });
     dispatch({ type: 'dialog', dialog: undefined });
@@ -175,6 +177,7 @@ export const App = () => {
                     void show(o);
                   }}
                   onOpenUrl={(u) => void api().openExternal(u)}
+                  busy={busy}
                 />
               </div>
             </div>

@@ -7,8 +7,8 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { readConfigFile, readLocalConfigFile, writeConfigFiles } from '../../adapters/fs.ts';
 import { applyRepoEdits, readRepoEdits, type RepoEdit } from '../../application/configEdit.ts';
-import { expand, findRepoRoot } from '../../cli/compose.ts';
-import { initWorkspaceFiles } from '../../cli/init.ts';
+import { expand, findRepoRoot } from '../../app/compose.ts';
+import { initWorkspaceFiles } from '../../app/init.ts';
 import { inspectFolder } from './inspect.ts';
 import { changeDiff } from '../../application/build.ts';
 import { changeIssues } from '../../application/changes.ts';
@@ -18,6 +18,7 @@ import { gateIssues } from '../../application/stages.ts';
 import { changeFile, type GatedStage } from '../../domain/epic.ts';
 import {
   abandonAction,
+  answerAction,
   approveAction,
   approveAllAction,
   assignAction,
@@ -78,6 +79,7 @@ const ARGS = {
   approve: z.tuple([slug, changeId.nullable(), text]),
   approveAll: z.tuple([slug, text]),
   revise: z.tuple([slug, changeId.nullable(), text.min(1)]),
+  answer: z.tuple([slug, z.array(z.object({ questionId: z.string().regex(/^Q\d{1,4}$/), text: text.min(1) })).min(1).max(20)]),
   sendBack: z.tuple([slug, z.enum(['explore', 'spec']), text.min(1)]),
   drop: z.tuple([slug, changeId, text.min(1)]),
   assign: z.tuple([slug, z.string().trim().min(1).max(200)]),
@@ -189,6 +191,8 @@ export const createHandlers = (ctx: HandlerContext) => {
     approve: (s, id, note) => exclusive(s, (d) => approveAction(d, s, id ?? undefined, note)),
     approveAll: (s, note) => exclusive(s, (d) => approveAllAction(d, s, note)),
     revise: (s, id, note) => exclusive(s, (d) => reviseAction(d, s, id ?? undefined, note)),
+    // Answering resumes the agent, so it runs exclusively (and shows as busy) like a run.
+    answer: (s, answers) => exclusive(s, (d) => answerAction(d, s, answers)),
     sendBack: (s, to, note) => exclusive(s, (d) => sendBackAction(d, s, to, note)),
     drop: (s, id, note) => exclusive(s, (d) => dropAction(d, s, id, note)),
     assign: (s, owner) => exclusive(s, (d) => assignAction(d, s, owner)),

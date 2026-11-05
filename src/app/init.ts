@@ -1,5 +1,5 @@
 /**
- * Files a new forge workspace needs. Shared by `forge init` and the desktop app's workspace setup.
+ * Files a new forge workspace needs, written by the desktop app's workspace setup.
  * Never overwrites anything that exists.
  */
 import { join } from 'node:path';

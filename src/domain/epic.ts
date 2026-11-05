@@ -28,8 +28,51 @@ export const ARTIFACT_FILE: Readonly<Record<GatedStage, string>> = {
 
 export const changeFile = (changeId: string): string => `changes/${changeId}.md`;
 
-/** `ready`: the stage agent may run. `awaiting_approval`: a human gate is open. */
-export type DocStatus = 'ready' | 'running' | 'awaiting_approval';
+/**
+ * `ready`: the stage agent may run. `awaiting_answers`: the agent paused with questions for the human.
+ * `awaiting_approval`: a human gate is open.
+ */
+export type DocStatus = 'ready' | 'running' | 'awaiting_answers' | 'awaiting_approval';
+
+export type QuestionOption = {
+  readonly label: string;
+  readonly description?: string;
+  /** The agent's own pick, if it has one. */
+  readonly recommended?: boolean;
+};
+
+/** A question a stage agent asked mid-run. The run pauses until the human answers. */
+export type Question = {
+  readonly id: string;
+  /** A few words naming the topic, e.g. "Priority shape". */
+  readonly header?: string;
+  readonly text: string;
+  readonly why: string;
+  readonly options: readonly QuestionOption[];
+  /** The owner may pick several options. */
+  readonly multiSelect?: boolean;
+};
+
+/** Logs written before options had descriptions stored them as plain strings. */
+const normalizeOptions = (options: readonly (QuestionOption | string)[]): readonly QuestionOption[] =>
+  options.map((o) => (typeof o === 'string' ? { label: o } : o));
+
+export type Answer = { readonly text: string; readonly by: string; readonly at: string };
+
+export type AskedQuestion = Question & { readonly round: number; readonly answer?: Answer };
+
+/** The conversation of a single-document stage: one agent session, paused and resumed around questions. */
+export type StageDialog = {
+  readonly stage: GatedStage;
+  /** Undefined once the session can't be resumed (e.g. after sending the stage back). */
+  readonly sessionId?: string;
+  /** Last running total the SDK reported for the session: the baseline for the next resumed run. */
+  readonly sessionCostUsd?: number;
+  readonly rounds: number;
+  /** Answers up to this round have been handed to the agent. */
+  readonly delivered: number;
+  readonly questions: readonly AskedQuestion[];
+};
 
 export type Risk = 'low' | 'medium' | 'high';
 export type ChangeKind = 'feature' | 'fix' | 'refactor' | 'test' | 'chore';
@@ -115,6 +158,8 @@ export type Epic = {
   readonly pendingFeedback: readonly string[];
   readonly notes: readonly Note[];
   readonly changes: readonly ChangeState[];
+  /** Questions and answers of the current single-document stage. */
+  readonly dialog?: StageDialog;
   readonly lastError?: string;
   readonly costUsd: number;
 };
@@ -133,8 +178,27 @@ type ChangeRef = { readonly changeId: string };
 type EventBody =
   | { readonly type: 'EpicCreated'; readonly slug: string; readonly title: string; readonly owner: string }
   | { readonly type: 'OwnerChanged'; readonly owner: string }
-  | { readonly type: 'StageStarted'; readonly stage: DocStage; readonly snapshots?: readonly RepoSnapshot[] }
-  | ({ readonly type: 'ArtifactProduced'; readonly stage: GatedStage } & Cost)
+  | {
+      readonly type: 'StageStarted';
+      readonly stage: DocStage;
+      readonly snapshots?: readonly RepoSnapshot[];
+      /** Set when a paused session resumes: answers up to this round have now been given to the agent. */
+      readonly deliveredRound?: number;
+    }
+  | ({
+      readonly type: 'ArtifactProduced';
+      readonly stage: GatedStage;
+      readonly sessionId?: string;
+      readonly sessionCostUsd?: number;
+    } & Cost)
+  | ({
+      readonly type: 'QuestionsAsked';
+      readonly stage: GatedStage;
+      readonly questions: readonly Question[];
+      readonly sessionId: string;
+      readonly sessionCostUsd: number;
+    } & Cost)
+  | { readonly type: 'QuestionAnswered'; readonly stage: GatedStage; readonly questionId: string; readonly answer: string }
   | ({ readonly type: 'StageFailed'; readonly stage: DocStage; readonly reason: string } & Cost)
   | { readonly type: 'GateApproved'; readonly stage: GatedStage; readonly note?: string }
   | { readonly type: 'RevisionRequested'; readonly stage: DocStage; readonly note: string }
@@ -188,6 +252,45 @@ export const stageIndex = (stage: Stage): number => ['explore', 'spec', 'changes
 
 const nextStage = (stage: GatedStage): DocStage => (stage === 'explore' ? 'spec' : 'changes');
 
+const dialogFor = (e: Epic, stage: GatedStage): StageDialog =>
+  e.dialog?.stage === stage ? e.dialog : { stage, rounds: 0, delivered: 0, questions: [] };
+
+/** What the owner chose for one question. */
+export type Choice =
+  | { readonly kind: 'options'; readonly labels: readonly string[] }
+  | { readonly kind: 'other'; readonly text: string }
+  | { readonly kind: 'agent' };
+
+export const AGENT_DECIDES = 'No preference: use your judgment, and say what you chose in Decisions.';
+
+/** The answer text the agent receives. Picking an option sends its label (and description, for context). */
+export const answerText = (q: Question, choice: Choice): string => {
+  if (choice.kind === 'agent') return AGENT_DECIDES;
+  if (choice.kind === 'other') return choice.text.trim();
+  return choice.labels
+    .map((label) => {
+      const o = q.options.find((x) => x.label === label);
+      return o?.description ? `${label} (${o.description})` : label;
+    })
+    .join('; ');
+};
+
+/**
+ * Typed answers from the CLI and TUI: "2" or "1,3" pick options by number, empty leaves it to the
+ * agent, anything else is the answer itself.
+ */
+export const choiceFromInput = (q: Question, input: string): Choice => {
+  const text = input.trim();
+  if (!text) return { kind: 'agent' };
+  const picks = text.split(/[\s,]+/).map(Number);
+  const valid = q.options.length > 0 && picks.every((n) => Number.isInteger(n) && n >= 1 && n <= q.options.length);
+  if (!valid || (!q.multiSelect && picks.length > 1)) return { kind: 'other', text };
+  return { kind: 'options', labels: [...new Set(picks)].map((n) => q.options[n - 1]!.label) };
+};
+
+/** Questions still waiting for a human answer. */
+export const openQuestions = (e: Epic): readonly AskedQuestion[] => e.dialog?.questions.filter((q) => !q.answer) ?? [];
+
 /** Statuses after which a change has code on a branch; it can no longer be dropped or replanned. */
 export const STARTED: readonly ChangeStatus[] = ['running', 'awaiting_review', 'approved', 'mr_open', 'merged'];
 
@@ -224,13 +327,52 @@ const applyEvent = (e: Epic, ev: EpicEvent): Epic => {
     case 'OwnerChanged':
       return { ...e, owner: ev.owner };
     case 'StageStarted':
-      return { ...e, status: 'running', lastError: undefined };
+      return {
+        ...e,
+        status: 'running',
+        lastError: undefined,
+        dialog: ev.deliveredRound !== undefined && e.dialog ? { ...e.dialog, delivered: ev.deliveredRound } : e.dialog,
+      };
     case 'ArtifactProduced':
-      return addCost({ ...e, status: 'awaiting_approval', revision: e.revision + 1, pendingFeedback: [] }, ev.costUsd);
+      return addCost(
+        {
+          ...e,
+          status: 'awaiting_approval',
+          revision: e.revision + 1,
+          pendingFeedback: [],
+          dialog: ev.sessionId ? { ...dialogFor(e, ev.stage), sessionId: ev.sessionId, sessionCostUsd: ev.sessionCostUsd } : e.dialog,
+        },
+        ev.costUsd,
+      );
+    case 'QuestionsAsked': {
+      const d = dialogFor(e, ev.stage);
+      const round = d.rounds + 1;
+      return addCost(
+        {
+          ...e,
+          status: 'awaiting_answers',
+          dialog: {
+            ...d,
+            sessionId: ev.sessionId,
+            sessionCostUsd: ev.sessionCostUsd,
+            rounds: round,
+            questions: [...d.questions, ...ev.questions.map((q) => ({ ...q, options: normalizeOptions(q.options), round }))],
+          },
+        },
+        ev.costUsd,
+      );
+    }
+    case 'QuestionAnswered': {
+      const d = dialogFor(e, ev.stage);
+      const questions = d.questions.map((q) => (q.id === ev.questionId ? { ...q, answer: { text: ev.answer, by: ev.by, at: ev.at } } : q));
+      // Once every question has an answer the agent can be resumed.
+      const open = questions.some((q) => !q.answer);
+      return { ...e, status: open ? 'awaiting_answers' : 'ready', dialog: { ...d, questions } };
+    }
     case 'StageFailed':
       return addCost({ ...e, status: 'ready', lastError: ev.reason }, ev.costUsd);
     case 'GateApproved': {
-      const moved = { ...e, stage: nextStage(ev.stage), status: 'ready' as const };
+      const moved = { ...e, stage: nextStage(ev.stage), status: 'ready' as const, dialog: undefined };
       return ev.note ? note(moved, { stage: ev.stage, kind: 'approve', text: ev.note, ...stamp }) : moved;
     }
     case 'RevisionRequested':
@@ -240,7 +382,15 @@ const applyEvent = (e: Epic, ev: EpicEvent): Epic => {
       );
     case 'SentBack':
       return note(
-        { ...e, stage: ev.to, status: 'ready', changes: [], pendingFeedback: [ev.note] },
+        {
+          ...e,
+          stage: ev.to,
+          status: 'ready',
+          changes: [],
+          pendingFeedback: [ev.note],
+          // Answers stay useful context; the old session does not.
+          dialog: e.dialog?.stage === ev.to ? { ...e.dialog, sessionId: undefined, sessionCostUsd: undefined } : undefined,
+        },
         { stage: ev.to, kind: 'back', text: ev.note, ...stamp },
       );
     case 'ChangesDrafted': {
@@ -357,5 +507,5 @@ export const replay = (events: readonly EpicEvent[]): Epic | undefined => {
 
 /** A change, or the epic, is waiting on a human. */
 export const needsHuman = (e: Epic): boolean =>
-  ((e.stage === 'explore' || e.stage === 'spec') && e.status === 'awaiting_approval') ||
+  ((e.stage === 'explore' || e.stage === 'spec') && (e.status === 'awaiting_approval' || e.status === 'awaiting_answers')) ||
   e.changes.some((c) => c.status === 'draft' || c.status === 'awaiting_review' || c.status === 'escalated');

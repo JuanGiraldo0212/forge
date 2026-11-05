@@ -53,6 +53,15 @@ export const ConfigSchema = z.object({
     })
     .prefault({}),
   changes: z.object({ maxFilesPerChange: z.number().int().positive().default(8) }).prefault({}),
+  explore: z
+    .object({
+      /** The explore agent may pause to ask the owner questions as it goes. */
+      interactive: z.boolean().default(true),
+      /** After this many rounds of questions the agent must finish with what it has. */
+      maxQuestionRounds: z.number().int().min(0).default(4),
+      maxQuestionsPerRound: z.number().int().min(1).max(10).default(3),
+    })
+    .prefault({}),
   build: z
     .object({
       maxParallel: z.number().int().positive().default(3),
@@ -104,60 +113,3 @@ export const parseConfig = (raw: unknown): Result<Config, readonly string[]> => 
     ? ok(parsed.data)
     : err(parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`));
 };
-
-/** For a dedicated planning repo next to the code repos (multi-repo teams). */
-export const WORKSPACE_CONFIG_YAML = `# Forge workspace. Commit this file. Run forge from this repo.
-# Clone the code repos next to it, or set their paths in .forge/local.yaml (not committed).
-epicsDir: epics
-
-models:
-  author: claude-opus-5-5
-  reviewer: claude-opus-5-5
-  effort: high
-
-changes:
-  maxFilesPerChange: 8
-
-build:
-  maxParallel: 3
-  allowedDomains:
-    - registry.npmjs.org
-
-review:
-  gate: always   # or risk-based: skip the human code-review gate for low/medium risk with no blocking findings
-
-gitlab:
-  baseUrl: https://gitlab.com
-  tokenEnv: GITLAB_TOKEN
-
-repos:
-  backend:
-    path: ../backend
-    project: group/backend
-    setup: [npm ci]
-    checks:
-      - { name: test, run: npm test }
-      - { name: lint, run: npm run lint }
-  frontend:
-    path: ../frontend
-    project: group/frontend
-    setup: [npm ci]
-    checks:
-      - { name: test, run: npm test }
-`;
-
-/** For running forge inside a single code repo. */
-export const SINGLE_REPO_CONFIG_YAML = `# Forge configuration. Commit this file.
-epicsDir: epics
-
-review:
-  gate: always
-
-repos:
-  app:
-    path: .
-    project: group/project
-    setup: [npm ci]
-    checks:
-      - { name: test, run: npm test }
-`;

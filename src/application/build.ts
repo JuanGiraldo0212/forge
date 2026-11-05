@@ -282,12 +282,12 @@ const idleReason = (changes: readonly ChangeState[]): string => {
 };
 
 export const runBuild = async (deps: Deps, epic: Epic, force: boolean): Promise<Result<BuildReport, DomainError>> => {
-  // A crashed run leaves changes "running". With --force they are handed back to the human, never silently restarted.
+  // A crashed run leaves changes "running". A forced run hands them back to the human, never silently restarts them.
   const interrupted = epic.changes.filter((c) => c.status === 'running');
   if (interrupted.length > 0 && !force)
     return err({
       code: 'already_running',
-      message: `Changes ${interrupted.map((c) => c.id).join(', ')} are running. If no forge process is running, use --force.`,
+      message: `Changes ${interrupted.map((c) => c.id).join(', ')} are marked as running. If no agent is working on them, use "Recover interrupted".`,
     });
   await emitAsForge(
     deps,
