@@ -77,13 +77,28 @@ export const scriptedAgent = (calls: AgentRequest[], script: Script): AgentRunne
   };
 };
 
-export const EPIC_SPEC = `# Epic
-## Goal
-Ship the thing.
-## Non-goals
+export const REQUIREMENTS = `# Requirements
+## Problem
+Users need the thing.
+## Functional requirements
+- R1: The thing works.
+  - Acceptance: tests pass
+## Out of scope
 Everything else.
-## Behavior
-It behaves.
+## Open questions
+None
+`;
+
+/** An epic spec planning the given changes ([id, repo, dependsOn]), each covering R1. */
+export const epicSpec = (changes: readonly (readonly [string, string, string?])[] = [['C1', 'api']]) => `# Epic
+## Summary
+Ship the thing.
+## Approach
+Small and direct.
+## Alternatives considered
+None worth it.
+## Changes
+${changes.map(([id, repo, dep]) => `### ${id}: Change ${id}\n- Repo: ${repo}\n- Depends on: ${dep ?? 'none'}\n- Requirements: R1\n\nDoes ${id}.\n`).join('\n')}
 ## Verification
 - tests pass
 ## Must not break
@@ -91,6 +106,8 @@ It behaves.
 ## Risk
 low — small change
 `;
+
+export const EPIC_SPEC = epicSpec();
 
 export const stageOf = (req: AgentRequest): string => req.prompt.match(/^# Stage: ([a-z ]+)/)?.[1]?.trim() ?? '';
 

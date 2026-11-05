@@ -1,29 +1,48 @@
 /**
- * The selected epic: header with stage stepper and epic-level actions, the change list, and the
- * selected change's status bar.
+ * The selected epic: header with stage stepper (which also picks the stage shown) and epic-level actions,
+ * the change list, and the selected change's status bar.
  */
-import { STAGE_LABEL, type ChangeState, type Epic } from '../../../domain/epic.ts';
-import { changeActions, changeHint, epicActions, epicHint, needsHuman, stepState, type ActionSpec } from '../model.ts';
+import { STAGE_LABEL, type ChangeState, type DocStage, type Epic, type Stage } from '../../../domain/epic.ts';
+import { canView, changeActions, changeHint, epicActions, epicHint, needsHuman, stepState, type ActionSpec } from '../model.ts';
 import { ActionButtons, Avatar, Chip, Spinner, StatusPill } from './ui.tsx';
 
-const STEPS = ['explore', 'spec', 'changes'] as const;
+const STEPS = ['requirements', 'spec', 'changes', 'development'] as const;
 
-export const Stepper = ({ epic, busy }: { epic: Epic; busy: boolean }) => (
+/** The stages, as tabs: a click shows that stage's documents. Stages not reached yet can't be opened. */
+export const Stepper = ({ epic, busy, view, onView }: { epic: Epic; busy: boolean; view: DocStage; onView: (stage: DocStage) => void }) => (
   <ol className="stepper">
     {STEPS.map((stage) => {
       const state = stepState(epic, stage);
       return (
-        <li key={stage} className={`step step-${state}`}>
-          <span className="step-icon">{state === 'current' && busy ? <Spinner /> : state === 'done' ? '✓' : state === 'gate' ? '◆' : state === 'current' ? '●' : '○'}</span>
-          {STAGE_LABEL[stage]}
-          {state === 'gate' && <span className="step-note">{epic.status === 'awaiting_answers' ? 'your answers' : 'your review'}</span>}
+        <li key={stage} className={`step step-${state}${stage === view ? ' step-viewing' : ''}`}>
+          <button className="step-button" disabled={!canView(epic, stage)} aria-current={stage === view ? 'page' : undefined} onClick={() => onView(stage)}>
+            <span className="step-icon">{state === 'current' && busy ? <Spinner /> : state === 'done' ? '✓' : state === 'gate' ? '◆' : state === 'current' ? '●' : '○'}</span>
+            {STAGE_LABEL[stage]}
+            {state === 'gate' && <span className="step-note">{epic.status === 'awaiting_answers' ? 'your answers' : 'your review'}</span>}
+          </button>
         </li>
       );
     })}
   </ol>
 );
 
-export const EpicHeader = ({ epic, busy, actor, onAction, onAssign }: { epic: Epic; busy: boolean; actor: string; onAction: (a: ActionSpec) => void; onAssign: () => void }) => (
+export const EpicHeader = ({
+  epic,
+  busy,
+  actor,
+  view,
+  onView,
+  onAction,
+  onAssign,
+}: {
+  epic: Epic;
+  busy: boolean;
+  actor: string;
+  view: DocStage;
+  onView: (stage: DocStage) => void;
+  onAction: (a: ActionSpec) => void;
+  onAssign: () => void;
+}) => (
   <header className="epic-header">
     <div className="epic-heading">
       <h1>{epic.title}</h1>
@@ -37,7 +56,7 @@ export const EpicHeader = ({ epic, busy, actor, onAction, onAssign }: { epic: Ep
         </span>
       </div>
     </div>
-    <Stepper epic={epic} busy={busy} />
+    <Stepper epic={epic} busy={busy} view={view} onView={onView} />
     <div className={`hint${needsHuman(epic) && !busy ? ' hint-warn' : ''}`}>
       <span>{epicHint(epic, busy)}</span>
       <ActionButtons actions={epicActions(epic, busy)} onAction={onAction} />
@@ -75,13 +94,28 @@ export const ChangeList = ({ epic, selected, onSelect }: { epic: Epic; selected:
   </section>
 );
 
-export const ChangeBar = ({ change, busy, onAction, onOpenUrl }: { change: ChangeState; busy: boolean; onAction: (a: ActionSpec) => void; onOpenUrl: (url: string) => void }) => (
+/** `readOnly`: an earlier stage being looked back at; its decisions are made, so it offers no actions. */
+export const ChangeBar = ({
+  change,
+  stage,
+  readOnly,
+  busy,
+  onAction,
+  onOpenUrl,
+}: {
+  change: ChangeState;
+  stage: Stage;
+  readOnly: boolean;
+  busy: boolean;
+  onAction: (a: ActionSpec) => void;
+  onOpenUrl: (url: string) => void;
+}) => (
   <div className={`change-bar change-bar-${change.status}`}>
     <div className="change-bar-text">
       <strong>{change.id}</strong>
       {change.spec && <Chip>{change.spec.repo}</Chip>}
       <StatusPill status={change.status} />
-      <span>{changeHint(change)}</span>
+      <span>{changeHint(change, stage)}</span>
       {change.mergeRequest && (
         <a
           href={change.mergeRequest.url}
@@ -94,6 +128,6 @@ export const ChangeBar = ({ change, busy, onAction, onOpenUrl }: { change: Chang
         </a>
       )}
     </div>
-    <ActionButtons actions={changeActions(change, busy)} onAction={onAction} />
+    {!readOnly && <ActionButtons actions={changeActions(change, busy)} onAction={onAction} />}
   </div>
 );

@@ -8,11 +8,10 @@ import { basename } from 'node:path';
 import type { Deps } from '../../application/deps.ts';
 import { composeDeps, findRepoRoot } from '../../app/compose.ts';
 import { err, ok, type Result } from '../../domain/result.ts';
-import type { ActivityLine, WorkspaceInfo } from '../shared/api.ts';
+import type { WorkspaceInfo } from '../shared/api.ts';
 import type { Settings } from './settings.ts';
 
 export type SessionEvents = {
-  readonly activity: (line: ActivityLine) => void;
   readonly epicsChanged: () => void;
   readonly busy: (busy: readonly string[]) => void;
 };
@@ -31,9 +30,8 @@ export const openSession = async (
   path: string,
   settings: Settings,
   events: SessionEvents,
-  options: { readonly agentExecutable?: string; readonly clock?: () => string } = {},
+  options: { readonly agentExecutable?: string } = {},
 ): Promise<Result<Session, string>> => {
-  const clock = options.clock ?? (() => new Date().toISOString());
   const root = await findRepoRoot(path);
   if (!root.ok) return err(`${path} is not inside a git repository.`);
 
@@ -44,13 +42,10 @@ export const openSession = async (
   const stored = process.env[tokenEnv] ? undefined : await settings.token(tokenEnv);
   if (stored) process.env[tokenEnv] = stored;
 
-  const emitLine = (epic: string, label: string, text: string) => events.activity({ epic, label, text, at: clock() });
+  // Progress shows in the UI through epic state; warnings (e.g. a repo snapshot that couldn't refresh) go to the log.
   const composed = await composeDeps(
     root.value,
-    {
-      log: { info: (m) => emitLine('', 'forge', m), warn: (m) => emitLine('', 'warning', m) },
-      onActivity: (label, text, epic) => emitLine(epic, label, text),
-    },
+    { log: { info() {}, warn: (m) => console.warn(`[forge] ${m}`) } },
     { agentExecutable: options.agentExecutable },
   );
   if (!composed.ok) return composed;

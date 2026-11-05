@@ -47,7 +47,7 @@ export type HandlerContext = {
 const slug = z.string().regex(/^[a-z0-9-]{1,64}$/);
 const changeId = z.string().regex(/^[A-Za-z0-9_-]{1,32}$/);
 const text = z.string().max(20_000);
-const doc = z.enum(['idea.md', 'exploration.md', 'epic-spec.md']);
+const doc = z.enum(['idea.md', 'requirements.md', 'epic-spec.md']);
 
 const repoEdit = z.object({
   name: z.string().max(64),
@@ -80,7 +80,7 @@ const ARGS = {
   approveAll: z.tuple([slug, text]),
   revise: z.tuple([slug, changeId.nullable(), text.min(1)]),
   answer: z.tuple([slug, z.array(z.object({ questionId: z.string().regex(/^Q\d{1,4}$/), text: text.min(1) })).min(1).max(20)]),
-  sendBack: z.tuple([slug, z.enum(['explore', 'spec']), text.min(1)]),
+  sendBack: z.tuple([slug, z.enum(['requirements', 'spec']), text.min(1)]),
   drop: z.tuple([slug, changeId, text.min(1)]),
   assign: z.tuple([slug, z.string().trim().min(1).max(200)]),
   abandon: z.tuple([slug, text.min(1)]),
@@ -95,7 +95,7 @@ const ARGS = {
 } satisfies Record<Method, z.ZodTuple>;
 
 
-const STAGE_OF: Readonly<Partial<Record<DocName, GatedStage>>> = { 'exploration.md': 'explore', 'epic-spec.md': 'spec' };
+const STAGE_OF: Readonly<Partial<Record<DocName, GatedStage>>> = { 'requirements.md': 'requirements', 'epic-spec.md': 'spec' };
 
 const noWorkspace: Outcome = { ok: false, text: 'Open a workspace first.', tone: 'error' };
 

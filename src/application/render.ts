@@ -48,6 +48,8 @@ export const describeEvent = (e: EpicEvent): string => {
       return `${STAGE_LABEL[e.stage]} failed: ${e.reason}`;
     case 'GateApproved':
       return `approved ${STAGE_LABEL[e.stage]}${e.note ? `: ${e.note}` : ''}`;
+    case 'ChangeSetApproved':
+      return `approved the change set; development starts${e.note ? `: ${e.note}` : ''}`;
     case 'RevisionRequested':
       return `asked to revise ${STAGE_LABEL[e.stage]}: ${e.note}`;
     case 'SentBack':
@@ -61,7 +63,7 @@ export const describeEvent = (e: EpicEvent): string => {
     case 'ChangeDropped':
       return `dropped ${e.changeId}: ${e.note}`;
     case 'ChangeStarted':
-      return `${e.changeId} started on ${e.branch}`;
+      return `${e.changeId} started on ${e.branch}${e.dependencySnapshots?.length ? `, reading dependencies${snapshotsText(e.dependencySnapshots)}` : ''}`;
     case 'ChangeRoundFailed':
       return `${e.changeId} round failed: ${e.signature.split('\n')[0]}`;
     case 'ChangeEscalated':

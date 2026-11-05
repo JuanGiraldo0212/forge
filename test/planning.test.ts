@@ -86,4 +86,15 @@ describe('repo instructions', () => {
     assert.ok(build.disallowedTools?.includes('Read(//w/epics/**/events.jsonl)'));
     assert.ok(build.disallowedTools?.includes('Bash(git push:*)'));
   });
+
+  it("makes a build agent's additional directories read-only", () => {
+    const base = { epic: 'e', label: 'x', cwd: '/wt', model: 'm', systemPrompt: '', prompt: '', maxTurns: 1, additionalDirectories: ['/snap/api'] };
+    const opts = { effort: 'high' as const, allowedDomains: [], withheldEnv: [] };
+    const build = optionsFor({ ...base, mode: 'build' }, opts, new AbortController());
+    assert.deepEqual(build.additionalDirectories, ['/snap/api']);
+    assert.ok(build.disallowedTools?.includes('Edit(//snap/api/**)'));
+    assert.ok(build.disallowedTools?.includes('Write(//snap/api/**)'));
+    assert.deepEqual(build.sandbox?.filesystem?.allowWrite, ['/wt'], 'Bash can only write the worktree');
+    assert.deepEqual(optionsFor({ ...base, mode: 'read' }, opts, new AbortController()).disallowedTools, [], 'read agents have no edit tools to deny');
+  });
 });

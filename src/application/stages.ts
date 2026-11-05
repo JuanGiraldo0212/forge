@@ -1,14 +1,14 @@
 /**
- * Epic creation, the single-document stages (explore, epic spec) and their gates.
+ * Epic creation, the single-document stages (requirements, epic spec) and their gates.
  */
 import { ARTIFACT_FILE, openQuestions, type AskedQuestion, type DocStage, type Epic, type GatedStage, type Question } from '../domain/epic.ts';
 import { canAnswer, canSendBack, openGate, runnableStage, type DomainError } from '../domain/lifecycle.ts';
 import { runCost } from '../domain/policy.ts';
 import { err, ok, type Result } from '../domain/result.ts';
-import { lintSpec } from '../domain/spec.ts';
+import { lintRequirements, lintSpec } from '../domain/spec.ts';
 import { emit, emitAsForge, loadEpic, type Deps } from './deps.ts';
 import { planningRequest, preparePlanning, snapshotRecord, type PlanningView } from './planning.ts';
-import { exploreContinuePrompt, explorePrompt, extractMarkdown, specPrompt, type DocInputs } from './prompts.ts';
+import { continuePrompt, extractMarkdown, requirementsPrompt, specPrompt, type DocInputs } from './prompts.ts';
 
 export const IDEA_FILE = 'idea.md';
 export const CHANGES_DIR = 'changes';
@@ -50,7 +50,7 @@ export const docInputs = async (deps: Deps, epic: Epic, view: PlanningView, prev
     epic,
     idea: (await read(IDEA_FILE)) ?? '',
     repos: view.repos,
-    exploration: await read(ARTIFACT_FILE.explore),
+    requirements: await read(ARTIFACT_FILE.requirements),
     spec: await read(ARTIFACT_FILE.spec),
     previous: previousFile ? await read(previousFile) : undefined,
   };
@@ -60,11 +60,14 @@ export const docInputs = async (deps: Deps, epic: Epic, view: PlanningView, prev
 export const gateIssues = async (deps: Deps, slug: string, stage: GatedStage): Promise<readonly string[]> => {
   const content = await deps.artifacts.read(slug, ARTIFACT_FILE[stage]);
   if (content === undefined) return [`${ARTIFACT_FILE[stage]} is missing`];
-  if (stage === 'spec') {
-    const lint = lintSpec(content);
+  if (stage === 'requirements') {
+    const lint = lintRequirements(content);
     return lint.ok ? [] : lint.error;
   }
-  return [];
+  // Every requirement must be covered by a planned change; ids come from the approved requirements.
+  const requirements = lintRequirements((await deps.artifacts.read(slug, ARTIFACT_FILE.requirements)) ?? '');
+  const lint = lintSpec(content, { requirementIds: requirements.ok ? requirements.value.ids : [], repos: Object.keys(deps.repos) });
+  return lint.ok ? [] : lint.error;
 };
 
 export type StageRun =
@@ -72,16 +75,16 @@ export type StageRun =
   | { readonly kind: 'questions'; readonly stage: GatedStage; readonly questions: readonly AskedQuestion[] };
 
 /**
- * Runs a single-document stage. Explore is a conversation: the agent may pause with questions, and the
+ * Runs a single-document stage. Each is a conversation: the agent may pause with questions, and the
  * next run resumes the same session with the owner's answers (and any revision feedback) until it
- * writes the exploration. The epic spec runs in one go.
+ * writes the document. With questions turned off for a stage, it runs in one go.
  */
 export const runGatedStage = async (deps: Deps, epic: Epic, stage: GatedStage): Promise<Result<StageRun, DomainError>> => {
-  const settings = deps.config.explore;
-  const interactive = stage === 'explore' && settings.interactive;
+  const settings = deps.config.questions;
+  const interactive = settings[stage];
   const dialog = epic.dialog?.stage === stage ? epic.dialog : undefined;
   const resume = interactive && dialog?.sessionId ? dialog : undefined;
-  const roundsLeft = interactive ? Math.max(0, settings.maxQuestionRounds - (dialog?.rounds ?? 0)) : 0;
+  const roundsLeft = interactive ? Math.max(0, settings.maxRounds - (dialog?.rounds ?? 0)) : 0;
   const answered = dialog?.questions.filter((q) => q.answer) ?? [];
   const toDeliver = resume ? answered.filter((q) => q.round > resume.delivered) : [];
 
@@ -93,15 +96,16 @@ export const runGatedStage = async (deps: Deps, epic: Epic, stage: GatedStage): 
   deps.log.info(`${resume ? 'Resuming' : 'Running'} ${stage} agent for "${epic.slug}"...`);
 
   const inputs = await docInputs(deps, epic, view, ARTIFACT_FILE[stage]);
+  const asking = { ...inputs, answered, roundsLeft, maxPerRound: settings.maxPerRound };
   const prompt = resume
-    ? exploreContinuePrompt(toDeliver, epic.pendingFeedback, roundsLeft, settings.maxQuestionsPerRound)
-    : stage === 'explore'
-      ? explorePrompt({ ...inputs, answered, roundsLeft, maxPerRound: settings.maxQuestionsPerRound })
-      : specPrompt(inputs);
+    ? continuePrompt(stage, toDeliver, epic.pendingFeedback, roundsLeft, settings.maxPerRound)
+    : stage === 'requirements'
+      ? requirementsPrompt(asking)
+      : specPrompt({ ...asking, maxFilesPerChange: deps.config.changes.maxFilesPerChange });
   const result = await deps.agent.run({
     ...(await planningRequest(deps, view, epic.slug, stage, prompt)),
     resume: resume?.sessionId,
-    ask: roundsLeft > 0 ? { maxPerCall: settings.maxQuestionsPerRound } : undefined,
+    ask: roundsLeft > 0 ? { maxPerCall: settings.maxPerRound } : undefined,
   });
   const baseline = resume?.sessionCostUsd;
 
@@ -135,7 +139,7 @@ export const runGatedStage = async (deps: Deps, epic: Epic, stage: GatedStage): 
       type: 'ArtifactProduced',
       stage,
       costUsd,
-      // Keep the explore session, so a revision continues the conversation instead of starting over.
+      // Keep the session, so a revision continues the conversation instead of starting over.
       ...(interactive ? { sessionId: result.value.sessionId, sessionCostUsd: result.value.sessionCostUsd } : {}),
     },
   ]);

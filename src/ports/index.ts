@@ -14,7 +14,7 @@ export type EpicStore = {
   readonly append: (slug: string, events: readonly EpicEvent[]) => Promise<void>;
 };
 
-/** Human-editable epic documents (exploration.md, epic-spec.md, changes/C1.md, ...). */
+/** Human-editable epic documents (requirements.md, epic-spec.md, changes/C1.md, ...). */
 export type ArtifactStore = {
   readonly read: (slug: string, name: string) => Promise<string | undefined>;
   readonly write: (slug: string, name: string, content: string) => Promise<void>;
@@ -30,7 +30,7 @@ export type RepoContext = {
 };
 
 export type AgentMode =
-  /** Read-only tools. Used for explore, spec, plan and review. */
+  /** Read-only tools. Used for requirements, spec, plan and review. */
   | 'read'
   /** Edit + Bash inside a sandbox limited to the working directory. Used for build. */
   | 'build';

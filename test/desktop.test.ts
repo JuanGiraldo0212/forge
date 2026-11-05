@@ -13,9 +13,9 @@ import { createHandlers } from '../src/desktop/main/handlers.ts';
 import type { Session } from '../src/desktop/main/session.ts';
 import { fileSettings, type Keychain } from '../src/desktop/main/settings.ts';
 import { mergePaths } from '../src/desktop/main/shellEnv.ts';
-import { changeActions, currentTab, epicActions, initialState, reducer, runWouldDoSomething, stepState } from '../src/desktop/renderer/model.ts';
+import { changeActions, currentTab, currentView, epicActions, epicHint, initialState, reducer, runWouldDoSomething, stepState, tabsFor } from '../src/desktop/renderer/model.ts';
 import type { Outcome } from '../src/ui/actions.ts';
-import { EPIC_SPEC, makeDeps, makeRepo, scriptedAgent, sh, stageOf, tempDir } from './helpers.ts';
+import { EPIC_SPEC, makeDeps, makeRepo, REQUIREMENTS, scriptedAgent, sh, stageOf, tempDir } from './helpers.ts';
 
 const epic = (patch: Partial<Epic> = {}): Epic => ({
   slug: 'e',
@@ -23,12 +23,13 @@ const epic = (patch: Partial<Epic> = {}): Epic => ({
   owner: 'me@example.com',
   createdAt: '',
   updatedAt: '',
-  stage: 'explore',
+  stage: 'requirements',
   status: 'ready',
   revision: 0,
   pendingFeedback: [],
   notes: [],
   changes: [],
+  pastDialogs: {},
   costUsd: 0,
   ...patch,
 });
@@ -52,14 +53,36 @@ describe('desktop view model', () => {
     assert.equal(gate[0]?.id, 'approve');
     assert.equal(gate[0]?.kind, 'primary');
     assert.deepEqual(ids(epicActions(epic(), true)), ['stop']);
-    assert.equal(stepState(epic({ status: 'awaiting_approval' }), 'explore'), 'gate');
+    assert.equal(stepState(epic({ status: 'awaiting_approval' }), 'requirements'), 'gate');
+  });
+
+  it('gates development on the whole change set, then offers building', () => {
+    const drafting = epic({ stage: 'changes', changes: [change('C1', 'ready'), change('C2', 'draft')] });
+    assert.ok(!ids(epicActions(drafting, false)).includes('approve'), 'a draft holds the set');
+    assert.equal(stepState(drafting, 'changes'), 'current');
+    const complete = epic({ stage: 'changes', changes: [change('C1', 'ready'), change('C2', 'dropped')] });
+    assert.deepEqual(epicActions(complete, false)[0], { id: 'approve', label: 'Start development', kind: 'primary', note: epicActions(complete, false)[0]!.note });
+    assert.equal(stepState(complete, 'changes'), 'gate');
+    assert.match(epicHint(complete, false), /Start development/);
+    const legacy = epic({ stage: 'changes', changes: [change('C1', 'approved'), change('C2', 'ready'), change('C3', 'awaiting_review')] });
+    assert.equal(epicActions(legacy, false)[0]?.label, 'Start development', 'changes built before the development stage existed count as approved');
+    const dev = epic({ stage: 'development', changes: [change('C1', 'ready')] });
+    assert.equal(epicActions(dev, false)[0]?.label, 'Build ready changes');
+  });
+
+  it('offers Restart stage when a run was cut off, in every stage', () => {
+    for (const stage of ['requirements', 'spec', 'changes', 'development'] as const) {
+      const stuck = epic({ stage, status: 'running' });
+      assert.equal(epicActions(stuck, false)[0]?.id, 'force-run', stage);
+      assert.match(epicHint(stuck, false), /Restart the stage/);
+    }
   });
 
   it('only makes Run primary when a run would do something', () => {
-    const blocked = epic({ stage: 'changes', changes: [change('C1', 'awaiting_review'), change('C2', 'ready', ['C1'])] });
+    const blocked = epic({ stage: 'development', changes: [change('C1', 'awaiting_review'), change('C2', 'ready', ['C1'])] });
     assert.equal(runWouldDoSomething(blocked), false);
     assert.ok(!ids(epicActions(blocked, false)).includes('run'));
-    const unblocked = epic({ stage: 'changes', changes: [change('C1', 'merged'), change('C2', 'ready', ['C1'])] });
+    const unblocked = epic({ stage: 'development', changes: [change('C1', 'merged'), change('C2', 'ready', ['C1'])] });
     assert.equal(epicActions(unblocked, false)[0]?.id, 'run');
   });
 
@@ -71,12 +94,46 @@ describe('desktop view model', () => {
   });
 
   it('selects the change that needs a decision and shows the matching tab', () => {
-    const e = epic({ stage: 'changes', changes: [change('C1', 'ready'), change('C2', 'awaiting_review'), change('C3', 'draft')] });
+    const e = epic({ stage: 'development', changes: [change('C1', 'ready'), change('C2', 'awaiting_review'), change('C3', 'escalated')] });
     const s = reducer(initialState, { type: 'epics', epics: [e] });
     assert.equal(s.changeId, 'C2');
     assert.equal(currentTab(s), 'review');
-    const draft = reducer(s, { type: 'select-change', changeId: 'C3' });
-    assert.equal(currentTab(draft), 'change');
+    const ready = reducer(s, { type: 'select-change', changeId: 'C1' });
+    assert.equal(currentTab(ready), 'change');
+  });
+
+  it("shows only the current stage's documents, and lets you go back to finished stages", () => {
+    const req = epic({ status: 'awaiting_approval', revision: 1 });
+    assert.deepEqual(tabsFor(req, 'requirements', undefined), ['idea', 'requirements', 'history']);
+    const changes = epic({ stage: 'changes', changes: [change('C1', 'draft')] });
+    let s = reducer(initialState, { type: 'epics', epics: [changes] });
+    assert.equal(currentView(s), 'changes');
+    assert.deepEqual(tabsFor(changes, 'changes', changes.changes[0]), ['change', 'history'], 'no idea, requirements, epic spec or build tabs');
+    assert.deepEqual(tabsFor(changes, 'development', changes.changes[0]), ['change', 'review', 'history']);
+
+    s = reducer(s, { type: 'view', view: 'requirements' });
+    assert.equal(currentView(s), 'requirements');
+    assert.equal(currentTab(s), 'requirements');
+    s = reducer(s, { type: 'tab', tab: 'change' });
+    assert.equal(currentTab(s), 'requirements', 'a tab from another stage falls back to the default');
+
+    const early = reducer(initialState, { type: 'epics', epics: [req] });
+    assert.equal(currentView(reducer(early, { type: 'view', view: 'changes' })), 'requirements', 'stages not reached yet stay closed');
+    const viewing = reducer(reducer(early, { type: 'view', view: 'requirements' }), { type: 'tab', tab: 'idea' });
+    const advanced = reducer(viewing, { type: 'epics', epics: [{ ...req, stage: 'spec', status: 'ready' }] });
+    assert.equal(currentView(advanced), 'spec', 'a new stage brings its own documents');
+    assert.equal(currentTab(advanced), 'spec');
+  });
+
+  it('opens the questions of the stage that asked them', () => {
+    const q = { id: 'Q1', text: 't', why: 'w', options: [], round: 1 };
+    const e = epic({ stage: 'spec', status: 'awaiting_answers', dialog: { stage: 'spec', rounds: 1, delivered: 0, questions: [q] } });
+    const s = reducer(initialState, { type: 'epics', epics: [e] });
+    assert.equal(currentTab(s), 'questions');
+    assert.deepEqual(tabsFor(e, 'spec', undefined), ['questions', 'spec', 'history']);
+    assert.deepEqual(tabsFor(e, 'requirements', undefined), ['idea', 'requirements', 'history'], 'that stage asked nothing');
+    const asked = { ...e, pastDialogs: { requirements: { stage: 'requirements' as const, rounds: 1, delivered: 1, questions: [{ ...q, answer: { text: 'a', by: 'me', at: '' } }] } } };
+    assert.deepEqual(tabsFor(asked, 'requirements', undefined), ['idea', 'questions', 'requirements', 'history'], 'an approved stage keeps its questions');
   });
 });
 
@@ -109,9 +166,9 @@ describe('desktop IPC handlers', () => {
     let release: () => void = () => {};
     const gate = new Promise<void>((r) => (release = r));
     const agent = scriptedAgent([], async (req) => {
-      if (stageOf(req) === 'explore') {
+      if (stageOf(req) === 'requirements') {
         await gate;
-        return { text: '## Summary\n<img src=x onerror="alert(1)"> fine' };
+        return { text: REQUIREMENTS.replace('Users need the thing.', '<img src=x onerror="alert(1)"> fine') };
       }
       if (stageOf(req) === 'epic spec') return { text: EPIC_SPEC };
       return undefined;
@@ -151,7 +208,7 @@ describe('desktop IPC handlers', () => {
 
     release();
     assert.ok(((await running) as Outcome).ok);
-    const view = (await dispatch('readDoc', [slug, 'exploration.md'])) as { content: string; editable: boolean };
+    const view = (await dispatch('readDoc', [slug, 'requirements.md'])) as { content: string; editable: boolean };
     assert.match(view.content, /onerror/, 'raw markdown goes to the renderer, which sanitizes it');
     assert.equal(view.editable, true);
   });

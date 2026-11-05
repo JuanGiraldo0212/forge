@@ -3,7 +3,7 @@
  * to show the user. No rendering, no front-end state.
  */
 import { syncMergeRequests } from '../application/build.ts';
-import { approveAllDrafts, approveChange, dropChange, reviseChange, revisePlan, runChanges } from '../application/changes.ts';
+import { approveAllDrafts, approveChange, approveChangeSet, dropChange, reviseChange, revisePlan, runChanges, runDevelopment } from '../application/changes.ts';
 import { loadEpic, type Deps } from '../application/deps.ts';
 import { abandon, answerQuestions, approveStage, assignOwner, createEpic, reviseStage, runGatedStage, runnable, sendBack } from '../application/stages.ts';
 import { STAGE_LABEL, type Epic } from '../domain/epic.ts';
@@ -29,7 +29,7 @@ export const loadAll = async (deps: Deps): Promise<readonly Epic[]> => {
 export const createEpicAction = async (deps: Deps, title: string, idea: string): Promise<Outcome> => {
   const created = await createEpic(deps, title, idea || title);
   return created.ok
-    ? done(`Created "${created.value}" (owner ${deps.actor}). Run it to start exploring.`, 'success', created.value)
+    ? done(`Created "${created.value}" (owner ${deps.actor}). Run it to start the requirements analysis.`, 'success', created.value)
     : failed(created.error.message);
 };
 
@@ -38,17 +38,21 @@ export const runAction = async (deps: Deps, slug: string, force: boolean): Promi
   if (!target.ok) return failed(target.error.message);
   const { epic, stage } = target.value;
   if (stage === 'changes') {
-    const r = await runChanges(deps, epic, force);
+    const r = await runChanges(deps, epic);
     if (!r.ok) return failed(r.error.message);
     const parts = [
       r.value.drafted.length ? `Drafted ${r.value.drafted.join(', ')}: review and approve each change spec` : '',
       r.value.revised.length ? `redrafted ${r.value.revised.join(', ')}` : '',
-      ...r.value.build.outcomes.map((o) => `${o.changeId}: ${o.result}`),
       ...r.value.errors,
-      r.value.build.outcomes.length || r.value.drafted.length || r.value.revised.length ? '' : (r.value.build.idle ?? ''),
     ].filter(Boolean);
-    const bad = r.value.errors.length > 0 || r.value.build.outcomes.some((o) => o.result === 'failed' || o.result === 'escalated');
-    return done(parts.join(' · ') || 'Nothing to do.', bad ? 'error' : 'info');
+    return done(parts.join(' · ') || 'Nothing to draft.', r.value.errors.length > 0 ? 'error' : 'info');
+  }
+  if (stage === 'development') {
+    const r = await runDevelopment(deps, epic, force);
+    if (!r.ok) return failed(r.error.message);
+    const parts = [...r.value.outcomes.map((o) => `${o.changeId}: ${o.result}${o.detail ? ` (${o.detail})` : ''}`), r.value.outcomes.length ? '' : (r.value.idle ?? '')].filter(Boolean);
+    const bad = r.value.outcomes.some((o) => o.result === 'failed' || o.result === 'escalated');
+    return done(parts.join(' · ') || 'Nothing to build.', bad ? 'error' : 'info');
   }
   const run = await runGatedStage(deps, epic, stage);
   if (!run.ok) return failed(run.error.message);
@@ -68,19 +72,28 @@ export const approveAction = async (deps: Deps, slug: string, changeId: string |
   if (changeId) {
     const r = await approveChange(deps, slug, changeId, n);
     if (!r.ok) return failed(r.error.message);
-    if (r.value.kind === 'spec') return done(`Approved change spec ${r.value.changeId}. The next run builds it.`);
+    if (r.value.kind === 'spec') return done(`Approved change spec ${r.value.changeId}.`);
     // The approval is recorded either way; opening the MR can still fail (push, token, GitLab).
     const o = r.value.outcome;
     return o.result === 'mr_open'
       ? done(`${o.changeId}: MR opened — ${o.detail}`)
       : failed(`${o.changeId}: code approved, but the MR did not open: ${o.detail}. The next run retries.`);
   }
+  const loaded = await loadEpic(deps, slug);
+  if (loaded.ok && loaded.value.stage === 'changes')
+    return fromResult(await approveChangeSet(deps, slug, n), (r) =>
+      [
+        'Change set approved. Development starts: run it to build the changes.',
+        r.missing.length ? `Planned in the epic spec but without a change spec: ${r.missing.join(', ')}.` : '',
+        r.unplanned.length ? `Not in the epic spec's plan: ${r.unplanned.join(', ')}.` : '',
+      ].filter(Boolean).join(' '),
+    );
   return fromResult(await approveStage(deps, slug, n), (stage) => `Approved ${STAGE_LABEL[stage]}. Run the next stage when ready.`);
 };
 
 export const approveAllAction = async (deps: Deps, slug: string, note: string): Promise<Outcome> =>
   fromResult(await approveAllDrafts(deps, slug, note.trim() || undefined), (r) =>
-    [r.approved.length ? `Approved ${r.approved.join(', ')}. The next run builds them.` : 'Nothing approved.', ...r.blocked.map((b) => b.split('\n').join(' '))].join(' · '),
+    [r.approved.length ? `Approved ${r.approved.join(', ')}.` : 'Nothing approved.', ...r.blocked.map((b) => b.split('\n').join(' '))].join(' · '),
   );
 
 /** Feedback on one change (spec or code), on the whole change set, or on the open gate. */
@@ -96,7 +109,7 @@ export const reviseAction = async (deps: Deps, slug: string, changeId: string | 
 };
 
 /**
- * Records answers; once none are left open, resumes the paused agent straight away so the exploration
+ * Records answers; once none are left open, resumes the paused agent straight away so the stage
  * carries on as a conversation.
  */
 export const answerAction = async (

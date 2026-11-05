@@ -11,17 +11,20 @@ import { syncMergeRequests } from '../src/application/build.ts';
 import {
   approveAllDrafts,
   approveChange,
+  approveChangeSet,
   changeIssues,
   dropChange,
   reviseChange,
   revisePlan,
   runChanges,
+  runDevelopment,
 } from '../src/application/changes.ts';
+import type { BuildReport } from '../src/application/build.ts';
 import { loadEpic, type Deps } from '../src/application/deps.ts';
 import { approveStage, createEpic, runGatedStage, runnable, sendBack } from '../src/application/stages.ts';
 import { changeFile } from '../src/domain/epic.ts';
 import type { AgentRequest } from '../src/ports/index.ts';
-import { CALL_COST, EPIC_SPEC, makeDeps, makeRepo, scriptedAgent, sh, stageOf, tempDir, type Script } from './helpers.ts';
+import { CALL_COST, epicSpec, makeDeps, makeRepo, REQUIREMENTS, scriptedAgent, sh, stageOf, tempDir, type Script } from './helpers.ts';
 
 const draft = (id: string, repo: string, files: string[], dependsOn: string[] = [], title = `Change ${id}`) => ({
   id,
@@ -43,24 +46,38 @@ const epicOf = async (deps: Deps, slug: string) => {
   return e.value;
 };
 
-const run = async (deps: Deps, slug: string) => {
+type RunReport = { drafted: readonly string[]; revised: readonly string[]; errors: readonly string[]; build?: BuildReport };
+
+const run = async (deps: Deps, slug: string): Promise<RunReport | undefined> => {
   const r = await runnable(deps, slug, false);
   assert.ok(r.ok, JSON.stringify(r));
   if (r.value.stage === 'changes') {
-    const c = await runChanges(deps, r.value.epic, false);
+    const c = await runChanges(deps, r.value.epic);
     assert.ok(c.ok, JSON.stringify(c));
     return c.value;
+  }
+  if (r.value.stage === 'development') {
+    const b = await runDevelopment(deps, r.value.epic, false);
+    assert.ok(b.ok, JSON.stringify(b));
+    return { drafted: [], revised: [], errors: [], build: b.value };
   }
   const g = await runGatedStage(deps, r.value.epic, r.value.stage);
   assert.ok(g.ok, JSON.stringify(g));
   return undefined;
 };
 
-/** Creates an epic and approves explore and the epic spec. */
+/** Approves every draft, then the change set: the epic moves to development. */
+const startDevelopment = async (deps: Deps, slug: string) => {
+  assert.ok((await approveAllDrafts(deps, slug, undefined)).ok);
+  const set = await approveChangeSet(deps, slug, undefined);
+  assert.ok(set.ok, JSON.stringify(set));
+};
+
+/** Creates an epic and approves the requirements and the epic spec. */
 const throughEpicSpec = async (deps: Deps): Promise<string> => {
   const created = await createEpic(deps, 'Due dates', 'Todos get due dates, shown in the web app.');
   assert.ok(created.ok);
-  for (const _ of ['explore', 'spec']) {
+  for (const _ of ['requirements', 'spec']) {
     await run(deps, created.value);
     assert.ok((await approveStage(deps, created.value, undefined)).ok);
   }
@@ -86,12 +103,13 @@ describe('multi-repo epic', () => {
 
     const calls: AgentRequest[] = [];
     let redrafts = 0;
+    let sawDependencyCode = false;
     const script: Script = async (req) => {
       switch (stageOf(req)) {
-        case 'explore':
-          return { text: '## Summary\nTouches api and web.\n## Open questions\n1. none' };
+        case 'requirements':
+          return { text: REQUIREMENTS };
         case 'epic spec':
-          return { text: EPIC_SPEC };
+          return { text: epicSpec([['C1', 'api'], ['C2', 'web', 'C1']]) };
         case 'change specs':
           return {
             structured: {
@@ -110,6 +128,7 @@ describe('multi-repo epic', () => {
       }
       // Build: write the change into whichever repo's worktree the agent was started in.
       const inApi = req.prompt.includes('repository "api"');
+      if (!inApi) sawDependencyCode = req.additionalDirectories?.some((d) => existsSync(join(d, 'src/due.mjs'))) ?? false;
       await mkdir(join(req.cwd, 'src'), { recursive: true });
       await mkdir(join(req.cwd, 'test'), { recursive: true });
       if (inApi) {
@@ -132,7 +151,7 @@ describe('multi-repo epic', () => {
     });
 
     const slug = await throughEpicSpec(deps);
-    const planningCall = calls.find((c) => stageOf(c) === 'explore')!;
+    const planningCall = calls.find((c) => stageOf(c) === 'requirements')!;
     const apiSnap = join(dir, 'worktrees', 'api', '_planning');
     assert.equal(planningCall.cwd, planning.repo, 'planning agents run from the workspace');
     assert.deepEqual(planningCall.additionalDirectories, [apiSnap, join(dir, 'worktrees', 'web', '_planning')], 'and read snapshots of every repo');
@@ -147,7 +166,7 @@ describe('multi-repo epic', () => {
     // Draft the set: one file per change, nothing builds yet.
     const first = await run(deps, slug);
     assert.deepEqual(first?.drafted, ['C1', 'C2', 'C3']);
-    assert.equal(first?.build.outcomes.length, 0);
+    assert.equal(first?.build, undefined, 'nothing builds while change specs are drafted');
     let e = await epicOf(deps, slug);
     assert.equal(e.owner, 'owner@example.com');
     assert.deepEqual(e.changes.map((c) => c.status), ['draft', 'draft', 'draft']);
@@ -163,23 +182,35 @@ describe('multi-repo epic', () => {
     assert.ok((await approveChange(deps, slug, 'C1', undefined)).ok);
     assert.ok((await reviseChange(deps, slug, 'C2', 'call it a due label')).ok);
 
-    // One run: C2 is redrafted, C1 (approved) builds in the api repo. C2 is not built: still a draft.
+    // Development waits for the whole set: C2 is still a draft under revision.
+    const early = await approveChangeSet(deps, slug, undefined);
+    assert.ok(!early.ok && /C2 \(revising\)/.test(early.error.message), JSON.stringify(early));
+
+    // One run: C2 is redrafted. Nothing builds yet.
     const second = await run(deps, slug);
     assert.deepEqual(second?.revised, ['C2']);
     assert.equal(redrafts, 1);
-    assert.deepEqual(second?.build.outcomes.map((o) => [o.changeId, o.result]), [['C1', 'awaiting_review']]);
+    assert.equal(second?.build, undefined);
     assert.match(calls.find((c) => stageOf(c) === 'change spec revision')!.prompt, /call it a due label/);
-    const buildC1 = calls.find((c) => c.mode === 'build')!;
-    assert.match(buildC1.cwd, /worktrees\/api\//, 'C1 builds in an api worktree');
-    assert.match(buildC1.systemPrompt, /API repo: ESM/, 'and sees the api AGENTS.md');
     e = await epicOf(deps, slug);
     assert.equal(e.changes.find((c) => c.id === 'C2')!.title, 'Show due label');
 
-    // C2 depends on C1, so once approved it waits for C1 to merge.
+    // Approving C2 completes the set; approving the set starts development. C3 was dropped, which the plan didn't include.
     assert.ok((await approveChange(deps, slug, 'C2', undefined)).ok);
+    const set = await approveChangeSet(deps, slug, 'ship it');
+    assert.ok(set.ok, JSON.stringify(set));
+    assert.deepEqual(set.value, { missing: [], unplanned: ['C3'] });
+    assert.equal((await epicOf(deps, slug)).stage, 'development');
+
+    // C1 builds in the api repo. C2 depends on C1, so it waits for C1 to merge.
+    const built = await run(deps, slug);
+    assert.deepEqual(built?.build?.outcomes.map((o) => [o.changeId, o.result]), [['C1', 'awaiting_review']]);
+    const buildC1 = calls.find((c) => c.mode === 'build')!;
+    assert.match(buildC1.cwd, /worktrees\/api\//, 'C1 builds in an api worktree');
+    assert.match(buildC1.systemPrompt, /API repo: ESM/, 'and sees the api AGENTS.md');
     const waiting = await run(deps, slug);
-    assert.equal(waiting?.build.outcomes.length, 0);
-    assert.match(waiting!.build.idle!, /code to review: C1.*waiting on unmerged dependencies: C2/);
+    assert.equal(waiting?.build?.outcomes.length, 0);
+    assert.match(waiting!.build!.idle!, /code to review: C1.*waiting on unmerged dependencies: C2/);
 
     // Approve C1's code: pushed to the api remote, MR opened in the api project only.
     const c1 = await approveChange(deps, slug, 'C1', 'lgtm');
@@ -189,13 +220,25 @@ describe('multi-repo epic', () => {
     assert.equal(hosts.web!.opened.length, 0);
     assert.match(hosts.api!.opened[0]!.description, /## Goal\n\nDo C1\./, 'the MR carries the change spec');
 
+    // Merge C1 into api's main for real, as GitLab would.
+    sh(api.repo, 'fetch', '-q', 'origin');
+    sh(api.repo, 'merge', '-q', '--ff-only', `origin/forge/${slug}/C1`);
+    sh(api.repo, 'push', '-q', 'origin', 'main');
     hosts.api!.merged.add(1);
     assert.ok((await syncMergeRequests(deps, slug)).ok);
 
-    // Now C2 builds in the web repo.
+    // Now C2 builds in the web repo, reading C1's merged api code (read-only), and so does its reviewer.
     const third = await run(deps, slug);
-    assert.deepEqual(third?.build.outcomes.map((o) => [o.changeId, o.result]), [['C2', 'awaiting_review']]);
-    assert.match(calls.filter((c) => c.mode === 'build').at(-1)!.cwd, /worktrees\/web\//);
+    assert.deepEqual(third?.build?.outcomes.map((o) => [o.changeId, o.result]), [['C2', 'awaiting_review']]);
+    const buildC2 = calls.filter((c) => c.mode === 'build').at(-1)!;
+    assert.match(buildC2.cwd, /worktrees\/web\//);
+    assert.deepEqual(buildC2.additionalDirectories, [apiSnap]);
+    assert.ok(sawDependencyCode, "the merged C1 code is in the api snapshot C2's agent reads");
+    assert.match(buildC2.prompt, /Code your change depends on \(read-only\)[\s\S]*api: .*_planning \(origin\/main at [0-9a-f]{8}; includes C1\)/);
+    assert.deepEqual(buildC1.additionalDirectories, [], 'C1 depends on nothing');
+    assert.deepEqual(calls.filter((c) => stageOf(c) === 'review').at(-1)!.additionalDirectories, [apiSnap]);
+    const startedC2 = (await deps.epics.load(slug)).find((ev) => ev.type === 'ChangeStarted' && ev.changeId === 'C2');
+    assert.ok(startedC2?.type === 'ChangeStarted' && startedC2.dependencySnapshots?.[0]?.repo === 'api', 'the log records which api commit C2 read');
     assert.ok((await approveChange(deps, slug, 'C2', undefined)).ok);
     assert.ok(sh(web.remote, 'rev-parse', `forge/${slug}/C2`));
     assert.equal(hosts.web!.opened.length, 1);
@@ -216,8 +259,8 @@ describe('change specs stage', () => {
     const wrapped: Script = async (req) => {
       const handled = await script(req);
       if (handled) return handled;
-      if (stageOf(req) === 'explore') return { text: '## Summary\nSmall.' };
-      if (stageOf(req) === 'epic spec') return { text: EPIC_SPEC };
+      if (stageOf(req) === 'requirements') return { text: REQUIREMENTS };
+      if (stageOf(req) === 'epic spec') return { text: epicSpec([['C1', 'app']]) };
       if (stageOf(req) === 'review') return { structured: { findings: [] } };
       return undefined;
     };
@@ -303,6 +346,7 @@ describe('change specs stage', () => {
     assert.ok((await approveAllDrafts(deps, slug, undefined)).ok);
     const drop = await dropChange(deps, slug, 'C1', 'no');
     assert.ok(!drop.ok && /C2 depend on C1/.test(drop.error.message));
+    assert.ok((await approveChangeSet(deps, slug, undefined)).ok);
     await run(deps, slug);
     const back = await sendBack(deps, slug, 'spec', 'rethink');
     assert.ok(!back.ok && /already have code: C1/.test(back.error.message));
@@ -319,7 +363,7 @@ describe('change specs stage', () => {
     });
     const slug = await throughEpicSpec(deps);
     await run(deps, slug);
-    assert.ok((await approveAllDrafts(deps, slug, undefined)).ok);
+    await startDevelopment(deps, slug);
     await run(deps, slug);
     let c1 = (await epicOf(deps, slug)).changes[0]!;
     assert.equal(c1.status, 'escalated');
@@ -346,7 +390,7 @@ describe('change specs stage', () => {
     });
     const slug = await throughEpicSpec(deps);
     await run(deps, slug);
-    assert.ok((await approveAllDrafts(deps, slug, undefined)).ok);
+    await startDevelopment(deps, slug);
     await run(deps, slug);
     const c1 = (await epicOf(deps, slug)).changes[0]!;
     assert.equal(c1.status, 'escalated');
@@ -362,7 +406,7 @@ describe('change specs stage', () => {
     });
     const slug = await throughEpicSpec(deps);
     await run(deps, slug);
-    assert.ok((await approveAllDrafts(deps, slug, undefined)).ok);
+    await startDevelopment(deps, slug);
     await run(deps, slug);
     const e = await epicOf(deps, slug);
     assert.match(e.changes[0]!.escalation!, /agent error: boom/);

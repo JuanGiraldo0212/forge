@@ -49,7 +49,6 @@ const open = async (root: string): Promise<{ workspace: WorkspaceInfo | null; er
     root,
     settings,
     {
-      activity: (line) => send(EVENTS.activity, line),
       epicsChanged: () => send(EVENTS.epicsChanged),
       busy: (busy) => send(EVENTS.busy, busy),
     },

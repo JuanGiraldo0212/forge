@@ -3,13 +3,12 @@
  */
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import type { Outcome } from '../shared/api.ts';
-import { Activity } from './components/Activity.tsx';
 import { AssignDialog, BackDialog, NewEpicDialog, NoteDialog, SettingsDialog, Welcome } from './components/Dialogs.tsx';
 import { DocPanel } from './components/DocPanel.tsx';
 import { RepoDialog } from './components/RepoDialog.tsx';
 import { ChangeBar, ChangeList, EpicHeader } from './components/Epic.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
-import { currentTab, initialState, reducer, selectedChange, selectedEpic, type ActionSpec } from './model.ts';
+import { currentTab, currentView, initialState, reducer, selectedChange, selectedEpic, stageView, tabsFor, type ActionSpec } from './model.ts';
 
 const api = () => window.forge;
 
@@ -49,7 +48,6 @@ export const App = () => {
     const offs = [
       api().onEpicsChanged(() => void reload()),
       api().onBusy((busy) => dispatch({ type: 'busy', busy })),
-      api().onActivity((line) => dispatch({ type: 'activity', line })),
     ];
     return () => offs.forEach((off) => off());
   }, [reload]);
@@ -83,11 +81,11 @@ export const App = () => {
       case 'stop':
         return api().stop(slug);
       case 'answer':
+        dispatch({ type: 'view', view: epic.dialog?.stage });
         return dispatch({ type: 'tab', tab: 'questions' });
     }
     if (a.note && ref.current.dialog?.kind !== 'note') return dispatch({ type: 'dialog', dialog: { kind: 'note', action: a, slug } });
     dispatch({ type: 'dialog', dialog: undefined });
-    if (a.id === 'run' || a.id === 'force-run') dispatch({ type: 'activity', line: { epic: slug, label: 'you', text: `run ${slug}`, at: new Date().toISOString() } });
     const outcome =
       a.id === 'run'
         ? await api().run(slug, false)
@@ -138,8 +136,10 @@ export const App = () => {
   const epic = selectedEpic(s);
   const change = selectedChange(s);
   const busy = epic ? s.busy.includes(epic.slug) : false;
+  const view = currentView(s);
   const tab = currentTab(s);
   const dialog = s.dialog;
+  const showChanges = (view === 'changes' || view === 'development') && !!epic?.changes.length;
 
   return (
     <div className="app">
@@ -157,18 +157,40 @@ export const App = () => {
         {!epic ? (
           <div className="empty-main">
             <h2>No epic selected</h2>
-            <p className="muted">Create an epic to start: describe the idea, and forge explores every repo in this workspace.</p>
+            <p className="muted">Create an epic to start: describe the idea, and forge works out its requirements against every repo in this workspace.</p>
           </div>
         ) : (
           <>
-            <EpicHeader epic={epic} busy={busy} actor={s.workspace.actor} onAction={(a) => void perform(a)} onAssign={() => void perform({ id: 'assign', label: '', kind: 'secondary' })} />
-            <div className={`epic-body${epic.changes.length ? ' with-changes' : ''}`}>
-              {epic.changes.length > 0 && <ChangeList epic={epic} selected={change?.id} onSelect={(id) => dispatch({ type: 'select-change', changeId: id })} />}
+            <EpicHeader
+              epic={epic}
+              busy={busy}
+              actor={s.workspace.actor}
+              view={view}
+              onView={(stage) => dispatch({ type: 'view', view: stage })}
+              onAction={(a) => void perform(a)}
+              onAssign={() => void perform({ id: 'assign', label: '', kind: 'secondary' })}
+            />
+            <div className={`epic-body${showChanges ? ' with-changes' : ''}`}>
+              {showChanges && <ChangeList epic={epic} selected={change?.id} onSelect={(id) => dispatch({ type: 'select-change', changeId: id })} />}
               <div className="epic-content">
-                {change && <ChangeBar change={change} busy={busy} onAction={(a) => void perform(a)} onOpenUrl={(u) => void api().openExternal(u)} />}
+                {showChanges && change && (
+                  <ChangeBar
+                    change={change}
+                    stage={epic.stage}
+                    readOnly={view !== stageView(epic)}
+                    busy={busy}
+                    onAction={(a) => void perform(a)}
+                    onOpenUrl={(u) => void api().openExternal(u)}
+                  />
+                )}
+                {view === 'changes' && !epic.changes.length && (
+                  <p className="muted empty-stage">No change specs yet. Run the epic to draft them from the approved epic spec.</p>
+                )}
                 <DocPanel
                   epic={epic}
-                  change={change}
+                  view={view}
+                  change={showChanges ? change : undefined}
+                  tabs={tabsFor(epic, view, showChanges ? change : undefined)}
                   tab={tab}
                   revision={s.revision}
                   onTab={(t) => dispatch({ type: 'tab', tab: t })}
@@ -184,7 +206,6 @@ export const App = () => {
           </>
         )}
       </main>
-      <Activity lines={s.activity} open={s.activityOpen} busy={s.busy} selected={epic?.slug} onToggle={() => dispatch({ type: 'toggle-activity' })} onStop={(slug) => void api().stop(slug)} />
 
       {dialog?.kind === 'note' && dialog.action.note && (
         <NoteDialog spec={dialog.action.note} onClose={() => dispatch({ type: 'dialog', dialog: undefined })} onSubmit={(note) => perform(dialog.action, note)} />

@@ -1,5 +1,5 @@
 /**
- * What planning agents (explore, epic spec, change specs) see of the code repos: read-only snapshots at
+ * What planning agents (requirements, epic spec, change specs) see of the code repos: read-only snapshots at
  * each repo's base (e.g. origin/main), refreshed before every planning run, so specs describe the code
  * that changes will actually be built on, not whatever a developer happens to have checked out.
  */

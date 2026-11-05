@@ -53,13 +53,16 @@ export const ConfigSchema = z.object({
     })
     .prefault({}),
   changes: z.object({ maxFilesPerChange: z.number().int().positive().default(8) }).prefault({}),
-  explore: z
+  /** Planning agents may pause to ask the epic's owner questions as they go. */
+  questions: z
     .object({
-      /** The explore agent may pause to ask the owner questions as it goes. */
-      interactive: z.boolean().default(true),
-      /** After this many rounds of questions the agent must finish with what it has. */
-      maxQuestionRounds: z.number().int().min(0).default(4),
-      maxQuestionsPerRound: z.number().int().min(1).max(10).default(3),
+      /** The requirements agent asks about the product: scope, behavior, priorities. */
+      requirements: z.boolean().default(true),
+      /** The epic spec agent asks technical decisions: contracts, patterns, how to slice the work. */
+      spec: z.boolean().default(true),
+      /** After this many rounds of questions in a stage the agent must finish with what it has. */
+      maxRounds: z.number().int().min(0).default(4),
+      maxPerRound: z.number().int().min(1).max(10).default(3),
     })
     .prefault({}),
   build: z
