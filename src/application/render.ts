@@ -48,6 +48,8 @@ export const describeEvent = (e: EpicEvent): string => {
       return `${STAGE_LABEL[e.stage]} failed: ${e.reason}`;
     case 'GateApproved':
       return `approved ${STAGE_LABEL[e.stage]}${e.note ? `: ${e.note}` : ''}`;
+    case 'ChangeSetApproved':
+      return `approved the change set; development starts${e.note ? `: ${e.note}` : ''}`;
     case 'RevisionRequested':
       return `asked to revise ${STAGE_LABEL[e.stage]}: ${e.note}`;
     case 'SentBack':

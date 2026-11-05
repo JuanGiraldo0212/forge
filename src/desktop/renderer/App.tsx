@@ -8,7 +8,7 @@ import { DocPanel } from './components/DocPanel.tsx';
 import { RepoDialog } from './components/RepoDialog.tsx';
 import { ChangeBar, ChangeList, EpicHeader } from './components/Epic.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
-import { currentTab, currentView, initialState, reducer, selectedChange, selectedEpic, tabsFor, type ActionSpec } from './model.ts';
+import { currentTab, currentView, initialState, reducer, selectedChange, selectedEpic, stageView, tabsFor, type ActionSpec } from './model.ts';
 
 const api = () => window.forge;
 
@@ -139,7 +139,7 @@ export const App = () => {
   const view = currentView(s);
   const tab = currentTab(s);
   const dialog = s.dialog;
-  const showChanges = view === 'changes' && !!epic?.changes.length;
+  const showChanges = (view === 'changes' || view === 'development') && !!epic?.changes.length;
 
   return (
     <div className="app">
@@ -173,7 +173,16 @@ export const App = () => {
             <div className={`epic-body${showChanges ? ' with-changes' : ''}`}>
               {showChanges && <ChangeList epic={epic} selected={change?.id} onSelect={(id) => dispatch({ type: 'select-change', changeId: id })} />}
               <div className="epic-content">
-                {showChanges && change && <ChangeBar change={change} busy={busy} onAction={(a) => void perform(a)} onOpenUrl={(u) => void api().openExternal(u)} />}
+                {showChanges && change && (
+                  <ChangeBar
+                    change={change}
+                    stage={epic.stage}
+                    readOnly={view !== stageView(epic)}
+                    busy={busy}
+                    onAction={(a) => void perform(a)}
+                    onOpenUrl={(u) => void api().openExternal(u)}
+                  />
+                )}
                 {view === 'changes' && !epic.changes.length && (
                   <p className="muted empty-stage">No change specs yet. Run the epic to draft them from the approved epic spec.</p>
                 )}

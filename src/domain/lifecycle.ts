@@ -3,7 +3,7 @@
  * Use cases call these before doing any side effect.
  */
 import { dependentsOf } from './changes.ts';
-import { STARTED, stageIndex, type ChangeState, type ChangeStatus, type DocStage, type Epic, type GatedStage } from './epic.ts';
+import { changeSetApproved, liveChanges, STARTED, stageIndex, type ChangeState, type ChangeStatus, type DocStage, type Epic, type GatedStage } from './epic.ts';
 import { err, ok, type Result } from './result.ts';
 
 export type DomainError = { readonly code: string; readonly message: string };
@@ -20,7 +20,7 @@ export const runnableStage = (e: Epic): Result<DocStage, DomainError> => {
   if (e.status === 'running') return fail('already_running', `Stage "${e.stage}" is already running.`);
   if (e.status === 'awaiting_answers')
     return fail('questions_open', `The ${e.stage} agent is waiting for answers to its questions. Answer them to continue.`);
-  if (e.stage === 'changes') return ok('changes');
+  if (e.stage === 'changes' || e.stage === 'development') return ok(e.stage);
   if (e.status === 'awaiting_approval')
     return fail('gate_open', `The ${e.stage} gate is waiting for approval. Approve or revise it first.`);
   return ok(e.stage as GatedStage);
@@ -32,6 +32,19 @@ export const openGate = (e: Epic): Result<GatedStage, DomainError> => {
   if (!l.ok) return l;
   if ((e.stage === 'requirements' || e.stage === 'spec') && e.status === 'awaiting_approval') return ok(e.stage);
   return fail('no_gate', `No requirements or epic spec gate is open on "${e.slug}" (stage ${e.stage}, ${e.status}).`);
+};
+
+/** The change specs gate: every live change spec approved (drafts dropped or approved first). */
+export const canApproveChangeSet = (e: Epic): Result<Epic, DomainError> => {
+  const l = live(e);
+  if (!l.ok) return l;
+  if (e.stage !== 'changes') return fail('no_gate', `The change set can only be approved in the change specs stage (stage ${e.stage}).`);
+  if (e.status === 'running') return fail('already_running', 'Change specs are being drafted.');
+  if (liveChanges(e).length === 0) return fail('no_changes', 'There are no change specs to approve.');
+  const pending = liveChanges(e).filter((c) => c.status !== 'ready');
+  if (pending.length > 0 || !changeSetApproved(e))
+    return fail('unapproved', `Approve or drop every change spec first: ${pending.map((c) => `${c.id} (${c.status})`).join(', ')}.`);
+  return ok(e);
 };
 
 /** A question the agent asked and nobody has answered yet. */

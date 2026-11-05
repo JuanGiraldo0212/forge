@@ -284,7 +284,7 @@ export const DocPanel = ({
             )}
           </>
         )}
-        {tab === 'questions' && <QuestionsPanel key={`${epic.slug}:${view}`} epic={epic} dialog={view === 'changes' ? undefined : stageDialog(epic, view)} busy={busy} onAnswered={onSaved} />}
+        {tab === 'questions' && <QuestionsPanel key={`${epic.slug}:${view}`} epic={epic} dialog={view === 'requirements' || view === 'spec' ? stageDialog(epic, view) : undefined} busy={busy} onAnswered={onSaved} />}
         {current?.kind === 'review' && tab !== 'questions' && change && <Review change={change} onOpenUrl={onOpenUrl} />}
         {current?.kind === 'diff' && <Diff text={current.text} />}
         {current?.kind === 'history' && <History entries={current.entries} />}

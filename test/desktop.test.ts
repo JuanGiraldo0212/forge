@@ -56,8 +56,20 @@ describe('desktop view model', () => {
     assert.equal(stepState(epic({ status: 'awaiting_approval' }), 'requirements'), 'gate');
   });
 
+  it('gates development on the whole change set, then offers building', () => {
+    const drafting = epic({ stage: 'changes', changes: [change('C1', 'ready'), change('C2', 'draft')] });
+    assert.ok(!ids(epicActions(drafting, false)).includes('approve'), 'a draft holds the set');
+    assert.equal(stepState(drafting, 'changes'), 'current');
+    const complete = epic({ stage: 'changes', changes: [change('C1', 'ready'), change('C2', 'dropped')] });
+    assert.deepEqual(epicActions(complete, false)[0], { id: 'approve', label: 'Start development', kind: 'primary', note: epicActions(complete, false)[0]!.note });
+    assert.equal(stepState(complete, 'changes'), 'gate');
+    assert.match(epicHint(complete, false), /Start development/);
+    const dev = epic({ stage: 'development', changes: [change('C1', 'ready')] });
+    assert.equal(epicActions(dev, false)[0]?.label, 'Build ready changes');
+  });
+
   it('offers Restart stage when a run was cut off, in every stage', () => {
-    for (const stage of ['requirements', 'spec', 'changes'] as const) {
+    for (const stage of ['requirements', 'spec', 'changes', 'development'] as const) {
       const stuck = epic({ stage, status: 'running' });
       assert.equal(epicActions(stuck, false)[0]?.id, 'force-run', stage);
       assert.match(epicHint(stuck, false), /Restart the stage/);
@@ -65,10 +77,10 @@ describe('desktop view model', () => {
   });
 
   it('only makes Run primary when a run would do something', () => {
-    const blocked = epic({ stage: 'changes', changes: [change('C1', 'awaiting_review'), change('C2', 'ready', ['C1'])] });
+    const blocked = epic({ stage: 'development', changes: [change('C1', 'awaiting_review'), change('C2', 'ready', ['C1'])] });
     assert.equal(runWouldDoSomething(blocked), false);
     assert.ok(!ids(epicActions(blocked, false)).includes('run'));
-    const unblocked = epic({ stage: 'changes', changes: [change('C1', 'merged'), change('C2', 'ready', ['C1'])] });
+    const unblocked = epic({ stage: 'development', changes: [change('C1', 'merged'), change('C2', 'ready', ['C1'])] });
     assert.equal(epicActions(unblocked, false)[0]?.id, 'run');
   });
 
@@ -80,12 +92,12 @@ describe('desktop view model', () => {
   });
 
   it('selects the change that needs a decision and shows the matching tab', () => {
-    const e = epic({ stage: 'changes', changes: [change('C1', 'ready'), change('C2', 'awaiting_review'), change('C3', 'draft')] });
+    const e = epic({ stage: 'development', changes: [change('C1', 'ready'), change('C2', 'awaiting_review'), change('C3', 'escalated')] });
     const s = reducer(initialState, { type: 'epics', epics: [e] });
     assert.equal(s.changeId, 'C2');
     assert.equal(currentTab(s), 'review');
-    const draft = reducer(s, { type: 'select-change', changeId: 'C3' });
-    assert.equal(currentTab(draft), 'change');
+    const ready = reducer(s, { type: 'select-change', changeId: 'C1' });
+    assert.equal(currentTab(ready), 'change');
   });
 
   it("shows only the current stage's documents, and lets you go back to finished stages", () => {
@@ -94,7 +106,8 @@ describe('desktop view model', () => {
     const changes = epic({ stage: 'changes', changes: [change('C1', 'draft')] });
     let s = reducer(initialState, { type: 'epics', epics: [changes] });
     assert.equal(currentView(s), 'changes');
-    assert.deepEqual(tabsFor(changes, 'changes', changes.changes[0]), ['change', 'review', 'history'], 'no idea, requirements or epic spec tabs');
+    assert.deepEqual(tabsFor(changes, 'changes', changes.changes[0]), ['change', 'history'], 'no idea, requirements, epic spec or build tabs');
+    assert.deepEqual(tabsFor(changes, 'development', changes.changes[0]), ['change', 'review', 'history']);
 
     s = reducer(s, { type: 'view', view: 'requirements' });
     assert.equal(currentView(s), 'requirements');

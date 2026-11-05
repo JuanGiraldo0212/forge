@@ -1,6 +1,6 @@
 /**
- * The change specs stage: draft the set, redraft single changes, approve them one by one, drop them.
- * Building approved changes is in build.ts; `runChanges` drives both.
+ * The change specs stage: draft the set, redraft single changes, approve them one by one, drop them,
+ * then approve the whole set to start development. Building approved changes is in build.ts.
  */
 import { z } from 'zod';
 import {
@@ -11,8 +11,9 @@ import {
   validateDraftSet,
   type ChangeDraft,
 } from '../domain/changes.ts';
-import { changeFile, type ApprovedChange, type ChangeState, type Epic } from '../domain/epic.ts';
-import { approvalTarget, canDropChange, canRevisePlan, revisionTarget, type DomainError } from '../domain/lifecycle.ts';
+import { ARTIFACT_FILE, changeFile, type ApprovedChange, type ChangeState, type Epic } from '../domain/epic.ts';
+import { approvalTarget, canApproveChangeSet, canDropChange, canRevisePlan, revisionTarget, type DomainError } from '../domain/lifecycle.ts';
+import { plannedChanges } from '../domain/spec.ts';
 import { err, ok, type Result } from '../domain/result.ts';
 import { approveChangeCode, runBuild, type BuildReport, type ChangeOutcome } from './build.ts';
 import { emit, emitAsForge, loadEpic, type Deps } from './deps.ts';
@@ -166,11 +167,10 @@ export type ChangesReport = {
   readonly drafted: readonly string[];
   readonly revised: readonly string[];
   readonly errors: readonly string[];
-  readonly build: BuildReport;
 };
 
-/** One run in the change specs stage: draft or redraft what needs it, then build what is approved. */
-export const runChanges = async (deps: Deps, epic: Epic, force: boolean): Promise<Result<ChangesReport, DomainError>> => {
+/** One run in the change specs stage: draft the set, or redraft what got feedback. Nothing builds here. */
+export const runChanges = async (deps: Deps, epic: Epic): Promise<Result<ChangesReport, DomainError>> => {
   const errors: string[] = [];
   let drafted: readonly string[] = [];
   if (epic.changes.length === 0 || epic.pendingFeedback.length > 0) {
@@ -188,11 +188,32 @@ export const runChanges = async (deps: Deps, epic: Epic, force: boolean): Promis
     else errors.push(r.error.message);
   }
 
-  const beforeBuild = await loadEpic(deps, epic.slug);
-  if (!beforeBuild.ok) return beforeBuild;
-  const build = await runBuild(deps, beforeBuild.value, force);
-  if (!build.ok) return build;
-  return ok({ drafted, revised, errors, build: build.value });
+  return ok({ drafted, revised, errors });
+};
+
+/** One run in the development stage: build what is ready, and retry MRs that failed to open. */
+export const runDevelopment = (deps: Deps, epic: Epic, force: boolean): Promise<Result<BuildReport, DomainError>> =>
+  runBuild(deps, epic, force);
+
+export type ChangeSetApproval = {
+  /** Changes the epic spec planned that have no change spec (e.g. merged away by plan-level feedback). */
+  readonly unplanned: readonly string[];
+  readonly missing: readonly string[];
+};
+
+/**
+ * The change specs gate: every live change spec is approved, so the epic moves on to development.
+ * Differences from the epic spec's plan are reported, not blocking: plan-level feedback may split or merge changes.
+ */
+export const approveChangeSet = async (deps: Deps, slug: string, note: string | undefined): Promise<Result<ChangeSetApproval, DomainError>> => {
+  const loaded = await loadEpic(deps, slug);
+  if (!loaded.ok) return loaded;
+  const can = canApproveChangeSet(loaded.value);
+  if (!can.ok) return can;
+  const planned = plannedChanges((await deps.artifacts.read(slug, ARTIFACT_FILE.spec)) ?? '').map((p) => p.id);
+  const ids = loaded.value.changes.map((c) => c.id);
+  await emit(deps, slug, [{ type: 'ChangeSetApproved', note }]);
+  return ok({ missing: planned.filter((id) => !ids.includes(id)), unplanned: ids.filter((id) => !planned.includes(id)) });
 };
 
 export type ApprovalOutcome =

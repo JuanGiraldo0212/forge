@@ -2,11 +2,11 @@
  * The selected epic: header with stage stepper (which also picks the stage shown) and epic-level actions,
  * the change list, and the selected change's status bar.
  */
-import { STAGE_LABEL, type ChangeState, type DocStage, type Epic } from '../../../domain/epic.ts';
+import { STAGE_LABEL, type ChangeState, type DocStage, type Epic, type Stage } from '../../../domain/epic.ts';
 import { canView, changeActions, changeHint, epicActions, epicHint, needsHuman, stepState, type ActionSpec } from '../model.ts';
 import { ActionButtons, Avatar, Chip, Spinner, StatusPill } from './ui.tsx';
 
-const STEPS = ['requirements', 'spec', 'changes'] as const;
+const STEPS = ['requirements', 'spec', 'changes', 'development'] as const;
 
 /** The stages, as tabs: a click shows that stage's documents. Stages not reached yet can't be opened. */
 export const Stepper = ({ epic, busy, view, onView }: { epic: Epic; busy: boolean; view: DocStage; onView: (stage: DocStage) => void }) => (
@@ -94,13 +94,28 @@ export const ChangeList = ({ epic, selected, onSelect }: { epic: Epic; selected:
   </section>
 );
 
-export const ChangeBar = ({ change, busy, onAction, onOpenUrl }: { change: ChangeState; busy: boolean; onAction: (a: ActionSpec) => void; onOpenUrl: (url: string) => void }) => (
+/** `readOnly`: an earlier stage being looked back at; its decisions are made, so it offers no actions. */
+export const ChangeBar = ({
+  change,
+  stage,
+  readOnly,
+  busy,
+  onAction,
+  onOpenUrl,
+}: {
+  change: ChangeState;
+  stage: Stage;
+  readOnly: boolean;
+  busy: boolean;
+  onAction: (a: ActionSpec) => void;
+  onOpenUrl: (url: string) => void;
+}) => (
   <div className={`change-bar change-bar-${change.status}`}>
     <div className="change-bar-text">
       <strong>{change.id}</strong>
       {change.spec && <Chip>{change.spec.repo}</Chip>}
       <StatusPill status={change.status} />
-      <span>{changeHint(change)}</span>
+      <span>{changeHint(change, stage)}</span>
       {change.mergeRequest && (
         <a
           href={change.mergeRequest.url}
@@ -113,6 +128,6 @@ export const ChangeBar = ({ change, busy, onAction, onOpenUrl }: { change: Chang
         </a>
       )}
     </div>
-    <ActionButtons actions={changeActions(change, busy)} onAction={onAction} />
+    {!readOnly && <ActionButtons actions={changeActions(change, busy)} onAction={onAction} />}
   </div>
 );

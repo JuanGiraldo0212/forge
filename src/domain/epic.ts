@@ -2,12 +2,13 @@
  * Epic lifecycle as an event-sourced aggregate.
  * The event log is the source of truth (and the audit trail); state is a pure fold over it.
  *
- *   requirements ─[gate]─► spec (epic spec: an RFC that plans the changes) ─[gate]─► changes
- *   In "changes", every change spec has its own lifecycle:
+ *   requirements ─[gate]─► spec (epic spec: an RFC that plans the changes) ─[gate]─► changes ─[gate]─► development
+ *   In "changes" each change spec is drafted and approved on its own; the gate approves the whole set.
+ *   In "development" each approved change is built, reviewed and merged:
  *   draft ─[approve]─► ready ─► running ─► awaiting_review ─[approve]─► approved ─► mr_open ─► merged
  */
 
-export const DOC_STAGES = ['requirements', 'spec', 'changes'] as const;
+export const DOC_STAGES = ['requirements', 'spec', 'changes', 'development'] as const;
 export type DocStage = (typeof DOC_STAGES)[number];
 /** Stages that produce one document and close with a single gate. */
 export type GatedStage = 'requirements' | 'spec';
@@ -17,6 +18,7 @@ export const STAGE_LABEL: Readonly<Record<Stage, string>> = {
   requirements: 'requirements',
   spec: 'epic spec',
   changes: 'change specs',
+  development: 'development',
   done: 'done',
   abandoned: 'abandoned',
 };
@@ -203,6 +205,8 @@ type EventBody =
   | { readonly type: 'QuestionAnswered'; readonly stage: GatedStage; readonly questionId: string; readonly answer: string }
   | ({ readonly type: 'StageFailed'; readonly stage: DocStage; readonly reason: string } & Cost)
   | { readonly type: 'GateApproved'; readonly stage: GatedStage; readonly note?: string }
+  /** Every live change spec is approved: the epic moves on to development. */
+  | { readonly type: 'ChangeSetApproved'; readonly note?: string }
   | { readonly type: 'RevisionRequested'; readonly stage: DocStage; readonly note: string }
   | { readonly type: 'SentBack'; readonly to: GatedStage; readonly note: string }
   | ({
@@ -250,7 +254,7 @@ type EventBody =
 export type EpicEvent = EventBody & { readonly at: string; readonly by: string };
 export type EpicEventType = EpicEvent['type'];
 
-export const stageIndex = (stage: Stage): number => ['requirements', 'spec', 'changes', 'done', 'abandoned'].indexOf(stage);
+export const stageIndex = (stage: Stage): number => ['requirements', 'spec', 'changes', 'development', 'done', 'abandoned'].indexOf(stage);
 
 const nextStage = (stage: GatedStage): DocStage => (stage === 'requirements' ? 'spec' : 'changes');
 
@@ -382,6 +386,10 @@ const applyEvent = (e: Epic, ev: EpicEvent): Epic => {
       const moved = { ...e, stage: nextStage(ev.stage), status: 'ready' as const, dialog: undefined, pastDialogs };
       return ev.note ? note(moved, { stage: ev.stage, kind: 'approve', text: ev.note, ...stamp }) : moved;
     }
+    case 'ChangeSetApproved': {
+      const moved = { ...e, stage: 'development' as const, status: 'ready' as const, pendingFeedback: [] };
+      return ev.note ? note(moved, { stage: 'changes', kind: 'approve', text: ev.note, ...stamp }) : moved;
+    }
     case 'RevisionRequested':
       return note(
         { ...e, status: 'ready', pendingFeedback: [...e.pendingFeedback, ev.note] },
@@ -472,7 +480,7 @@ const applyEvent = (e: Epic, ev: EpicEvent): Epic => {
     case 'ChangeApproved': {
       const approved = updateChange(e, ev.changeId, (c) => ({ ...c, status: 'approved' }));
       return ev.note
-        ? note(approved, { stage: 'changes', kind: 'approve', text: ev.note, changeId: ev.changeId, ...stamp })
+        ? note(approved, { stage: 'development', kind: 'approve', text: ev.note, changeId: ev.changeId, ...stamp })
         : approved;
     }
     case 'ChangeReworkRequested':
@@ -484,7 +492,7 @@ const applyEvent = (e: Epic, ev: EpicEvent): Epic => {
           feedback: [...c.feedback, ev.note],
           escalation: undefined,
         })),
-        { stage: 'changes', kind: 'revise', text: ev.note, changeId: ev.changeId, ...stamp },
+        { stage: 'development', kind: 'revise', text: ev.note, changeId: ev.changeId, ...stamp },
       );
     case 'MergeRequestOpened':
       return updateChange(e, ev.changeId, (c) => ({ ...c, status: 'mr_open', mergeRequest: { iid: ev.iid, url: ev.url } }));
@@ -519,7 +527,14 @@ export const replay = (events: readonly EpicEvent[]): Epic | undefined => {
   return rest.reduce((e, ev) => ({ ...applyEvent(e, ev), updatedAt: ev.at }), initial);
 };
 
+/** Live changes: everything not dropped. */
+export const liveChanges = (e: Epic): readonly ChangeState[] => e.changes.filter((c) => c.status !== 'dropped');
+
+/** The change set is ready for the development gate: at least one live change, every one approved. */
+export const changeSetApproved = (e: Epic): boolean => liveChanges(e).length > 0 && liveChanges(e).every((c) => c.status === 'ready');
+
 /** A change, or the epic, is waiting on a human. */
 export const needsHuman = (e: Epic): boolean =>
   ((e.stage === 'requirements' || e.stage === 'spec') && (e.status === 'awaiting_approval' || e.status === 'awaiting_answers')) ||
+  (e.stage === 'changes' && e.status !== 'running' && changeSetApproved(e)) ||
   e.changes.some((c) => c.status === 'draft' || c.status === 'awaiting_review' || c.status === 'escalated');

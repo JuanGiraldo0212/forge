@@ -1,7 +1,7 @@
 /**
  * Renderer view model: pure state, reducer and "what can I do here" rules. No React, no DOM, no IPC.
  */
-import { DOC_STAGES, needsHuman, stageDialog, stageIndex, type ChangeState, type DocStage, type Epic, type Stage } from '../../domain/epic.ts';
+import { changeSetApproved, DOC_STAGES, needsHuman, stageDialog, stageIndex, type ChangeState, type DocStage, type Epic, type Stage } from '../../domain/epic.ts';
 import type { Outcome, WorkspaceInfo } from '../shared/api.ts';
 
 export type Tab = 'idea' | 'questions' | 'requirements' | 'spec' | 'change' | 'review' | 'diff' | 'history';
@@ -159,10 +159,12 @@ export const currentView = (s: State): DocStage => {
 
 /** Each stage shows only its own documents; History is the epic's audit trail and shows everywhere. */
 export const tabsFor = (e: Epic, view: DocStage, change: ChangeState | undefined): readonly Tab[] => {
-  const questions: Tab[] = view !== 'changes' && stageDialog(e, view)?.questions.length ? ['questions'] : [];
+  const questions: Tab[] = (view === 'requirements' || view === 'spec') && stageDialog(e, view)?.questions.length ? ['questions'] : [];
   if (view === 'requirements') return ['idea', ...questions, 'requirements', 'history'];
   if (view === 'spec') return [...questions, 'spec', 'history'];
-  return change ? ['change', 'review', ...(change.branch ? (['diff'] as Tab[]) : []), 'history'] : ['history'];
+  if (!change) return ['history'];
+  if (view === 'changes') return ['change', 'history'];
+  return ['change', 'review', ...(change.branch ? (['diff'] as Tab[]) : []), 'history'];
 };
 
 /** The tab to show when the user has not picked one: whatever the next decision is about. */
@@ -172,6 +174,7 @@ export const defaultTab = (e: Epic, change: ChangeState | undefined, view: DocSt
     return e.stage === 'requirements' && e.revision === 0 ? (e.dialog?.questions.length ? 'questions' : 'idea') : 'requirements';
   if (view === 'spec') return 'spec';
   if (!change) return 'history';
+  if (view === 'changes') return 'change';
   if (change.status === 'awaiting_review' || change.status === 'escalated' || change.status === 'mr_open' || change.status === 'merged')
     return 'review';
   return 'change';
@@ -192,21 +195,17 @@ export const stepState = (e: Epic, stage: Stage): StepState => {
   const mine = stageIndex(stage);
   if (e.stage === 'done' || mine < at) return 'done';
   if (mine > at) return 'todo';
-  return stage !== 'changes' && (e.status === 'awaiting_approval' || e.status === 'awaiting_answers') ? 'gate' : 'current';
+  if (stage === 'changes') return e.status !== 'running' && changeSetApproved(e) ? 'gate' : 'current';
+  return stage !== 'development' && (e.status === 'awaiting_approval' || e.status === 'awaiting_answers') ? 'gate' : 'current';
 };
 
 const note = (title: string, label: string, required: boolean, confirm: string): NoteSpec => ({ title, label, required, confirm });
 
 /** In the change specs stage, a run drafts, redrafts, builds unblocked changes, or retries opening MRs. */
 export const runWouldDoSomething = (e: Epic): boolean => {
+  if (e.stage === 'changes') return e.changes.length === 0 || e.pendingFeedback.length > 0 || e.changes.some((c) => c.status === 'revising');
   const merged = new Set(e.changes.filter((c) => c.status === 'merged').map((c) => c.id));
-  return (
-    e.changes.length === 0 ||
-    e.pendingFeedback.length > 0 ||
-    e.changes.some(
-      (c) => c.status === 'revising' || c.status === 'approved' || (c.status === 'ready' && (c.spec?.dependsOn ?? []).every((d) => merged.has(d))),
-    )
-  );
+  return e.changes.some((c) => c.status === 'approved' || (c.status === 'ready' && (c.spec?.dependsOn ?? []).every((d) => merged.has(d))));
 };
 
 /** Epic-level actions: the gate, the whole change set, and the epic itself. */
@@ -231,12 +230,25 @@ export const epicActions = (e: Epic, busy: boolean): readonly ActionSpec[] => {
 
   // A drafting run that was cut off (app closed, crash) leaves the stage "running" with no agent attached.
   if (e.status === 'running') return [{ id: 'force-run', label: 'Restart stage', kind: 'primary' }, back, abandon];
-  const drafts = e.changes.filter((c) => c.status === 'draft').length;
   const runnable = runWouldDoSomething(e);
+
+  if (e.stage === 'changes') {
+    const drafts = e.changes.filter((c) => c.status === 'draft').length;
+    const complete = changeSetApproved(e);
+    return [
+      ...(complete
+        ? [{ id: 'approve' as const, label: 'Start development', kind: 'primary' as const, note: note('Approve the change set', 'Note for development (optional)', false, 'Start development') }]
+        : []),
+      ...(runnable ? [{ id: 'run' as const, label: e.changes.length === 0 ? 'Draft change specs' : 'Redraft', kind: complete ? ('secondary' as const) : ('primary' as const) }] : []),
+      ...(drafts > 1 ? [{ id: 'approve-all' as const, label: `Approve all ${drafts} drafts`, kind: 'secondary' as const, note: note('Approve all drafts', 'Note (optional)', false, 'Approve all') }] : []),
+      ...(e.changes.length ? [{ id: 'revise' as const, label: 'Feedback on all changes…', kind: 'secondary' as const, note: note('Feedback on the change set', 'Unapproved change specs are redrafted with this', true, 'Send feedback') }] : []),
+      back,
+      abandon,
+    ];
+  }
+
   return [
-    ...(runnable ? [{ id: 'run' as const, label: e.changes.length === 0 ? 'Draft change specs' : 'Run (draft & build)', kind: 'primary' as const }] : []),
-    ...(drafts > 1 ? [{ id: 'approve-all' as const, label: `Approve all ${drafts} drafts`, kind: 'secondary' as const, note: note('Approve all drafts', 'Note (optional)', false, 'Approve all') }] : []),
-    ...(e.changes.length ? [{ id: 'revise' as const, label: 'Feedback on all changes…', kind: 'secondary' as const, note: note('Feedback on the change set', 'Unapproved change specs are redrafted with this', true, 'Send feedback') }] : []),
+    ...(runnable ? [{ id: 'run' as const, label: 'Build ready changes', kind: 'primary' as const }] : []),
     ...(e.changes.some((c) => c.status === 'mr_open') ? [{ id: 'sync' as const, label: 'Sync MRs', kind: 'secondary' as const }] : []),
     ...(e.changes.some((c) => c.status === 'running') ? [{ id: 'force-run' as const, label: 'Recover interrupted', kind: 'secondary' as const }] : []),
     back,
@@ -279,7 +291,8 @@ export const changeActions = (c: ChangeState, busy: boolean): readonly ActionSpe
   }
 };
 
-export const changeHint = (c: ChangeState): string => {
+export const changeHint = (c: ChangeState, stage: Stage = 'development'): string => {
+  if (stage === 'changes' && c.status === 'ready') return 'Approved. It builds in development, once every change spec is approved.';
   switch (c.status) {
     case 'draft':
       return 'Draft. Read it, edit it if needed, then approve it or ask for a redraft.';
@@ -309,7 +322,7 @@ export const epicHint = (e: Epic, busy: boolean): string => {
   if (e.stage === 'done') return 'Done: every change is merged.';
   if (e.stage === 'abandoned') return 'Abandoned.';
   if (e.status === 'running') return 'Marked as running, but no agent is attached in this app. Restart the stage if it was interrupted.';
-  if (e.stage !== 'changes') {
+  if (e.stage === 'requirements' || e.stage === 'spec') {
     if (e.status === 'awaiting_answers') {
       const n = e.dialog?.questions.filter((q) => !q.answer).length ?? 0;
       return `The ${e.stage === 'requirements' ? 'requirements' : 'epic spec'} agent paused with ${n} question${n === 1 ? '' : 's'} for you. Answer and it carries on.`;
@@ -317,10 +330,16 @@ export const epicHint = (e: Epic, busy: boolean): string => {
     if (e.status === 'awaiting_approval') return `Waiting for you: read the ${e.stage === 'requirements' ? 'requirements' : 'epic spec'}, edit it if needed, then approve or request changes.`;
     return e.pendingFeedback.length ? 'Your feedback is queued. Run the agent to regenerate.' : `Next: run the ${e.stage === 'requirements' ? 'requirements agent' : 'epic spec agent'}.`;
   }
-  if (e.changes.length === 0) return 'Next: draft change specs from the approved epic spec.';
-  const waiting = e.changes.filter((c) => c.status === 'draft' || c.status === 'awaiting_review' || c.status === 'escalated');
+  if (e.stage === 'changes') {
+    if (e.changes.length === 0) return 'Next: draft change specs from the approved epic spec.';
+    const drafts = e.changes.filter((c) => c.status === 'draft');
+    if (drafts.length) return `${drafts.length} change spec${drafts.length > 1 ? 's need' : ' needs'} you: ${drafts.map((c) => c.id).join(', ')}.`;
+    if (changeSetApproved(e)) return 'Every change spec is approved. Start development to build them.';
+    return 'Feedback queued. Redraft to address it.';
+  }
+  const waiting = e.changes.filter((c) => c.status === 'awaiting_review' || c.status === 'escalated');
   if (waiting.length) return `${waiting.length} change${waiting.length > 1 ? 's need' : ' needs'} you: ${waiting.map((c) => c.id).join(', ')}.`;
-  return 'Nothing waiting on you. Run to draft or build what is ready, or merge open MRs.';
+  return 'Nothing waiting on you. Build what is ready, or merge open MRs.';
 };
 
 export { needsHuman };

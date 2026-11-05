@@ -12,12 +12,13 @@ able to fail, independent review, and humans deciding what merges.
 ## The flow
 
 ```
-idea ─► requirements ─[approve]─► epic spec (RFC) ─[approve]─► change specs
+idea ─► requirements ─[approve]─► epic spec (RFC) ─[approve]─► change specs ─[approve set]─► development
                                                       │  one per merge request, each in exactly one repo
                                                       ▼
-              each change:  draft ─[approve]─► build ──────────────────────────────[approve]─► MR ─► merge
-                                               agent ⇄ repo checks (≤20 rounds / 3 identical failures)
-                                               → commit → revert test → review agent
+  change specs:  draft ─[approve each]─► approved            (redraft or drop any one; approve the set when all are approved)
+  development:   build ──────────────────────────────[approve]─► MR ─► merge
+                 agent ⇄ repo checks (≤20 rounds / 3 identical failures)
+                 → commit → revert test → review agent
 ```
 
 - **Epic**: has an **owner** (whoever creates it; `forge assign` changes it). The owner drives it through
@@ -38,8 +39,11 @@ idea ─► requirements ─[approve]─► epic spec (RFC) ─[approve]─► c
   ids, repos and dependencies) and carrying the low-level detail: files, precise behavior, tests. Each
   names its repo, files, dependencies and risk, with Goal, Behavior, Verification and Must not break.
   An agent drafts the set; you edit,
-  approve, redraft or drop **each one separately**. Approved changes start building while you're
-  still working on others.
+  approve, redraft or drop **each one separately**. Nothing builds yet.
+- **Development** starts when you approve the change set (**Start development**), which needs every
+  change spec approved or dropped. Forge notes any change the epic spec planned that has no change spec,
+  or the reverse. Here each change is built, checked, reviewed, and opened as an MR after you approve
+  its code.
 - **Dependencies** can cross repos. For example, the API change merges first, then the web change
   that uses it builds.
 - **Approval freezes a change spec.** Forge builds from a snapshot taken when you approved it, so
@@ -144,8 +148,8 @@ or save it under ⚙ Settings; only forge sees it, never the agents.
 
 An Electron app with the same flow. You get an epic list and a stage stepper that doubles as navigation:
 each stage shows only its own documents (requirements: idea, questions, requirements; epic spec:
-questions, epic spec; changes: the change list with repo chips, each change's spec, review findings and
-colored diff), and you can click back to a finished stage to read it. History is available in every
+questions, epic spec; change specs: the change list with repo chips and each spec; development: the same
+list with each change's approved spec, review findings and colored diff), and you can click back to a finished stage to read it. History is available in every
 stage. While agents run, the epic header shows a **Stop** button.
 
 ```bash
