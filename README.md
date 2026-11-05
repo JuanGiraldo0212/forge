@@ -130,6 +130,11 @@ keeps both sides' events, and forge orders them by time.
   denied).
 - Build and review agents run in a worktree of their change's repo. They get the epic spec, their
   change spec, the workspace and repo instructions, and that repo's checks.
+- **Dependencies in other repos are readable.** When a change depends (directly or through other
+  changes) on merged changes in another repo, its build and review agents also get that repo's snapshot
+  at `origin/<base>`, which holds the merged code, so they match the real contract rather than only the
+  spec. It is read-only: Edit and Write are denied there and Bash can only write the worktree. The event
+  log records which commit was read. Same-repo dependencies are already in the worktree's base.
 - Each change's MR opens in its own repo's GitLab project. The MR description includes the change spec.
 
 ## Quick start

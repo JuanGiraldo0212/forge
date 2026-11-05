@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { applyLocal, parseConfig } from '../src/application/config.ts';
-import { parseChangeSpec, readyChanges, renderChangeSpec, selectBatch, validateChange, validateDraftSet } from '../src/domain/changes.ts';
+import { parseChangeSpec, readyChanges, renderChangeSpec, selectBatch, transitiveDependencies, validateChange, validateDraftSet } from '../src/domain/changes.ts';
 import { needsHuman, replay, type ApprovedChange, type ChangeState, type EpicEvent } from '../src/domain/epic.ts';
 import { approvalTarget, canDropChange, canSendBack, openGate, revisionTarget, runnableStage } from '../src/domain/lifecycle.ts';
 import { escalationReason, failureSignature, reviewGateRequired, runCost } from '../src/domain/policy.ts';
@@ -138,6 +138,25 @@ describe('change specs', () => {
     assert.deepEqual(readyChanges([{ ...a, status: 'merged' }, b]).map((c) => c.id), ['B']);
     const ready = [state(spec('P', 'api', ['f']), 'ready'), state(spec('Q', 'api', ['f']), 'ready'), state(spec('R', 'web', ['f']), 'ready')];
     assert.deepEqual(selectBatch(ready, 3).map((c) => c.id), ['P', 'R'], 'same path in another repo is no conflict');
+  });
+});
+
+describe('transitive dependencies', () => {
+  const spec = (id: string, repo: string, dependsOn: string[] = []): ChangeState => ({
+    id,
+    title: id,
+    status: 'ready',
+    spec: { id, title: id, repo, kind: 'feature', risk: 'low', files: ['f'], dependsOn, verification: ['v'], markdown: '' },
+    specFeedback: [],
+    failures: [],
+    feedback: [],
+    findings: [],
+  });
+
+  it('follows dependencies of dependencies, once each, dependencies first', () => {
+    const changes = [spec('C1', 'api'), spec('C2', 'web', ['C1']), spec('C3', 'web', ['C2', 'C1']), spec('C4', 'api')];
+    assert.deepEqual(transitiveDependencies(changes, 'C3').map((c) => c.id), ['C1', 'C2']);
+    assert.deepEqual(transitiveDependencies(changes, 'C1'), []);
   });
 });
 

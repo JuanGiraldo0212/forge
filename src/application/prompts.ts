@@ -274,8 +274,28 @@ export const changesSchema = (repoNames: readonly string[]): Record<string, unkn
   additionalProperties: false,
 });
 
+/** Another repository's code at its base branch, read-only, holding merged changes this one depends on. */
+export type DependencyCode = {
+  readonly repo: string;
+  readonly path: string;
+  readonly ref: string;
+  readonly commit?: string;
+  /** The merged changes it holds that this change depends on. */
+  readonly changes: readonly string[];
+  readonly stale: boolean;
+};
+
+const dependencyList = (code: readonly DependencyCode[]): string =>
+  bullets(
+    code.map(
+      (d) =>
+        `${d.repo}: ${d.path} (${d.ref}${d.commit ? ` at ${d.commit.slice(0, 8)}` : ''}; includes ${d.changes.join(', ')}${d.stale ? '; could not be refreshed, so it may be missing recent merges' : ''})`,
+    ),
+  );
+
 export type BuildInputs = {
   readonly epicSpec: string;
+  readonly dependencyCode: readonly DependencyCode[];
   readonly change: ChangeState & { readonly spec: ApprovedChange };
   readonly repo: string;
   readonly checks: readonly string[];
@@ -286,13 +306,18 @@ export type BuildInputs = {
 const priorFindings = (findings: readonly Finding[]): string =>
   bullets(findings.map((f) => `[${f.severity}] ${f.file ? `${f.file}${f.line ? `:${f.line}` : ''}: ` : ''}${f.summary}`));
 
-export const buildPrompt = ({ epicSpec, change, repo, checks, testGlobs, revertTestRequired }: BuildInputs): string => `# Stage: build — change ${change.id} in repository "${repo}"
+export const buildPrompt = ({ epicSpec, dependencyCode, change, repo, checks, testGlobs, revertTestRequired }: BuildInputs): string => `# Stage: build — change ${change.id} in repository "${repo}"
 
 ${section('Epic spec (the whole epic; you implement only your change)', epicSpec)}## Your change spec
 
 ${change.spec.markdown.trim()}
 
-${section('Reviewer findings from the previous attempt', change.findings.length ? priorFindings(change.findings) : undefined)}${section('Human feedback you must address', change.feedback.length ? bullets(change.feedback) : undefined)}Rules:
+${section(
+  'Code your change depends on (read-only)',
+  dependencyCode.length
+    ? `Changes this one depends on are merged in other repositories. Read their code to match the real contract (names, payloads, errors), not only what the specs say:\n\n${dependencyList(dependencyCode)}\n\nThese directories are read-only. Change nothing there; if their code contradicts your change spec, say so in your final message.`
+    : undefined,
+)}${section('Reviewer findings from the previous attempt', change.findings.length ? priorFindings(change.findings) : undefined)}${section('Human feedback you must address', change.feedback.length ? bullets(change.feedback) : undefined)}Rules:
 - You are in a git worktree of "${repo}". Stay within the files listed in the change spec. If you truly must touch another file, do it and explain why in your final message.
 - Do not commit, push, or change git configuration. Forge commits for you.
 - Never delete, skip or weaken an existing test or assertion to make checks pass.
@@ -315,13 +340,14 @@ export const missingTestPrompt = (kind: string, testGlobs: readonly string[]): s
 
 export type ReviewInputs = {
   readonly epicSpec: string;
+  readonly dependencyCode: readonly DependencyCode[];
   readonly change: ChangeState & { readonly spec: ApprovedChange };
   readonly diff: string;
   readonly undeclared: readonly string[];
   readonly revertTest: 'passed' | 'skipped';
 };
 
-export const reviewPrompt = ({ epicSpec, change, diff, undeclared, revertTest }: ReviewInputs): string => `# Stage: review — change ${change.id} in "${change.spec.repo}"
+export const reviewPrompt = ({ epicSpec, dependencyCode, change, diff, undeclared, revertTest }: ReviewInputs): string => `# Stage: review — change ${change.id} in "${change.spec.repo}"
 
 You are reviewing another agent's change. You did not write it. Find real defects; do not praise or restate the change.
 
@@ -338,7 +364,7 @@ ${change.spec.markdown.trim()}
 ${tail(diff, 150_000)}
 \`\`\`
 
-You may read files in the working directory for context.
+You may read files in the working directory for context.${dependencyCode.length ? ` The merged code this change depends on in other repositories is readable too; check the change against it:\n\n${dependencyList(dependencyCode)}` : ''}
 
 Severity:
 - blocking: incorrect behavior, change spec or "Must not break" violation, broken contract with another repository, security issue, data loss, behavior without a test, unexplained changes outside the spec.

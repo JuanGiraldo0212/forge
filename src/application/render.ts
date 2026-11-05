@@ -63,7 +63,7 @@ export const describeEvent = (e: EpicEvent): string => {
     case 'ChangeDropped':
       return `dropped ${e.changeId}: ${e.note}`;
     case 'ChangeStarted':
-      return `${e.changeId} started on ${e.branch}`;
+      return `${e.changeId} started on ${e.branch}${e.dependencySnapshots?.length ? `, reading dependencies${snapshotsText(e.dependencySnapshots)}` : ''}`;
     case 'ChangeRoundFailed':
       return `${e.changeId} round failed: ${e.signature.split('\n')[0]}`;
     case 'ChangeEscalated':

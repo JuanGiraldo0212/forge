@@ -4,8 +4,8 @@
  */
 import { matchesGlob } from 'node:path';
 import { z } from 'zod';
-import { readyChanges, selectBatch, undeclaredChanges } from '../domain/changes.ts';
-import { ARTIFACT_FILE, type ApprovedChange, type ChangeState, type Epic, type Finding } from '../domain/epic.ts';
+import { readyChanges, selectBatch, transitiveDependencies, undeclaredChanges } from '../domain/changes.ts';
+import { ARTIFACT_FILE, type ApprovedChange, type ChangeState, type Epic, type Finding, type RepoSnapshot } from '../domain/epic.ts';
 import { approvalTarget, changesNeedingMergeRequest, type DomainError } from '../domain/lifecycle.ts';
 import { escalationReason, failureSignature, needsRevertTest, reviewGateRequired, runCost } from '../domain/policy.ts';
 import { err, ok, type Result } from '../domain/result.ts';
@@ -20,6 +20,7 @@ import {
   reviewPrompt,
   revertTestFailedPrompt,
   systemPrompt,
+  type DependencyCode,
 } from './prompts.ts';
 import { mergeRequestDescription } from './render.ts';
 
@@ -37,7 +38,55 @@ export type BuildReport = {
 
 type Approved = ChangeState & { readonly spec: ApprovedChange };
 
-type Ctx = { readonly deps: Deps; readonly slug: string; readonly epicSpec: string };
+type RepoView = { readonly path: string; readonly ref: string; readonly commit?: string; readonly stale: boolean };
+
+type Ctx = {
+  readonly deps: Deps;
+  readonly slug: string;
+  readonly epicSpec: string;
+  readonly changes: readonly ChangeState[];
+  /** One refresh per repo per run: changes built in parallel may read the same repo. */
+  readonly repoViews: Map<string, Promise<RepoView | undefined>>;
+};
+
+const refreshRepoView = async (deps: Deps, name: string): Promise<RepoView | undefined> => {
+  const repo = repoFor(deps, name);
+  if (!repo.ok) return undefined;
+  const ref = baseRef(repo.value.config);
+  const fetched = await repo.value.vcs.fetch();
+  const snap = fetched.ok ? await repo.value.vcs.snapshot(ref) : undefined;
+  if (snap?.ok) return { path: snap.value.path, ref, commit: snap.value.commit, stale: false };
+  const last = await repo.value.vcs.existingSnapshot();
+  deps.log.warn(`${name}: could not refresh ${ref}; ${last ? 'dependent builds read its last snapshot' : 'dependent builds go without its code'}.`);
+  return last ? { path: last.path, ref, commit: last.commit, stale: true } : undefined;
+};
+
+const repoView = (ctx: Ctx, name: string): Promise<RepoView | undefined> => {
+  const cached = ctx.repoViews.get(name) ?? refreshRepoView(ctx.deps, name);
+  ctx.repoViews.set(name, cached);
+  return cached;
+};
+
+/**
+ * Read-only code of the other repositories holding this change's merged dependencies (direct or not), at
+ * their base branch, so the agent builds against the real contract. Same-repo dependencies are already in
+ * the worktree's base. A repo that can't be refreshed falls back to its last snapshot, or is left out.
+ */
+const dependencyCode = async (ctx: Ctx, change: Approved): Promise<readonly DependencyCode[]> => {
+  const byRepo = new Map<string, string[]>();
+  for (const d of transitiveDependencies(ctx.changes, change.id))
+    if (d.repo !== change.spec.repo) byRepo.set(d.repo, [...(byRepo.get(d.repo) ?? []), d.id]);
+  const code = await Promise.all(
+    [...byRepo].map(async ([name, changes]): Promise<DependencyCode | undefined> => {
+      const view = await repoView(ctx, name);
+      return view && { repo: name, ...view, changes };
+    }),
+  );
+  return code.filter((c): c is DependencyCode => c !== undefined);
+};
+
+const snapshotsOf = (code: readonly DependencyCode[]): readonly RepoSnapshot[] =>
+  code.map((d) => ({ repo: d.repo, ref: d.ref, commit: d.commit, source: d.stale ? 'stale-snapshot' : 'snapshot' }));
 
 type Verdict =
   | { readonly ok: true; readonly commit: string; readonly revertTest: 'passed' | 'skipped' }
@@ -108,7 +157,14 @@ const parseFindings = (structured: unknown, text: string): Result<readonly Findi
   return parsed.success ? ok(parsed.data.findings) : err('reviewer did not return valid findings JSON');
 };
 
-const review = async (ctx: Ctx, repo: RepoDeps, wt: Worktree, change: Approved, revertTest: 'passed' | 'skipped'): Promise<ChangeOutcome> => {
+const review = async (
+  ctx: Ctx,
+  repo: RepoDeps,
+  wt: Worktree,
+  change: Approved,
+  revertTest: 'passed' | 'skipped',
+  depCode: readonly DependencyCode[],
+): Promise<ChangeOutcome> => {
   const { config, agent } = ctx.deps;
   const base = baseRef(repo.config);
   const [diff, changed] = await Promise.all([repo.vcs.diff(wt, base), repo.vcs.changedFiles(wt, base)]);
@@ -120,11 +176,12 @@ const review = async (ctx: Ctx, repo: RepoDeps, wt: Worktree, change: Approved, 
     epic: ctx.slug,
     label: `review ${change.id}`,
     cwd: wt.path,
+    additionalDirectories: depCode.map((d) => d.path),
     mode: 'read',
     model: config.models.reviewer,
     systemPrompt: systemPrompt(await instructionsFor(ctx.deps, [{ name: repo.name, root: wt.path }], { claudeMd: false })),
     denyRead: forgeInternals(ctx.deps),
-    prompt: reviewPrompt({ epicSpec: ctx.epicSpec, change, diff: diff.value, undeclared, revertTest }),
+    prompt: reviewPrompt({ epicSpec: ctx.epicSpec, dependencyCode: depCode, change, diff: diff.value, undeclared, revertTest }),
     maxTurns: config.loop.maxTurnsPerRound,
     outputSchema: FINDINGS_SCHEMA,
   });
@@ -175,12 +232,16 @@ const runChange = async (ctx: Ctx, change: Approved): Promise<ChangeOutcome> => 
     if (broken) return escalate(ctx, change.id, `setup "${broken.name}" failed:\n${broken.output.slice(-2000)}`);
   }
 
-  await emitAsForge(ctx.deps, ctx.slug, [{ type: 'ChangeStarted', changeId: change.id, branch }]);
+  const depCode = await dependencyCode(ctx, change);
+  await emitAsForge(ctx.deps, ctx.slug, [
+    { type: 'ChangeStarted', changeId: change.id, branch, ...(depCode.length ? { dependencySnapshots: snapshotsOf(depCode) } : {}) },
+  ]);
   const revertTestRequired = needsRevertTest(change.spec.kind);
   // Instructions as of this change's branch, not the developer's clone. The SDK loads CLAUDE.md from the worktree itself.
   const system = systemPrompt(await instructionsFor(ctx.deps, [{ name: repo.name, root: wt.path }], { claudeMd: false }));
   let prompt = buildPrompt({
     epicSpec: ctx.epicSpec,
+    dependencyCode: depCode,
     change,
     repo: repo.name,
     checks: repo.config.checks.map((c) => c.run),
@@ -198,6 +259,7 @@ const runChange = async (ctx: Ctx, change: Approved): Promise<ChangeOutcome> => 
       epic: ctx.slug,
       label: change.id,
       cwd: wt.path,
+      additionalDirectories: depCode.map((d) => d.path),
       mode: 'build',
       model: config.models.author,
       systemPrompt: system,
@@ -228,7 +290,7 @@ const runChange = async (ctx: Ctx, change: Approved): Promise<ChangeOutcome> => 
           sessionCostUsd: sessionTotal,
         },
       ]);
-      return review(ctx, repo, wt, change, verdict.revertTest);
+      return review(ctx, repo, wt, change, verdict.revertTest, depCode);
     }
     if ('fatal' in verdict) return escalate(ctx, change.id, verdict.fatal, { costUsd, sessionCostUsd: sessionTotal });
 
@@ -311,7 +373,7 @@ export const runBuild = async (deps: Deps, epic: Epic, force: boolean): Promise<
   }
 
   const epicSpec = (await deps.artifacts.read(epic.slug, ARTIFACT_FILE.spec)) ?? '';
-  const ctx: Ctx = { deps, slug: epic.slug, epicSpec };
+  const ctx: Ctx = { deps, slug: epic.slug, epicSpec, changes: reloaded.value.changes, repoViews: new Map() };
   deps.log.info(`Starting ${batch.map((c) => `${c.id} (${c.spec.repo})`).join(', ')}`);
   const outcomes = await Promise.all(batch.map((c) => runChange(ctx, c)));
   return ok({ outcomes: [...retried, ...outcomes] });

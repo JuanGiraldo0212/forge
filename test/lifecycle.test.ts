@@ -103,6 +103,7 @@ describe('multi-repo epic', () => {
 
     const calls: AgentRequest[] = [];
     let redrafts = 0;
+    let sawDependencyCode = false;
     const script: Script = async (req) => {
       switch (stageOf(req)) {
         case 'requirements':
@@ -127,6 +128,7 @@ describe('multi-repo epic', () => {
       }
       // Build: write the change into whichever repo's worktree the agent was started in.
       const inApi = req.prompt.includes('repository "api"');
+      if (!inApi) sawDependencyCode = req.additionalDirectories?.some((d) => existsSync(join(d, 'src/due.mjs'))) ?? false;
       await mkdir(join(req.cwd, 'src'), { recursive: true });
       await mkdir(join(req.cwd, 'test'), { recursive: true });
       if (inApi) {
@@ -218,13 +220,25 @@ describe('multi-repo epic', () => {
     assert.equal(hosts.web!.opened.length, 0);
     assert.match(hosts.api!.opened[0]!.description, /## Goal\n\nDo C1\./, 'the MR carries the change spec');
 
+    // Merge C1 into api's main for real, as GitLab would.
+    sh(api.repo, 'fetch', '-q', 'origin');
+    sh(api.repo, 'merge', '-q', '--ff-only', `origin/forge/${slug}/C1`);
+    sh(api.repo, 'push', '-q', 'origin', 'main');
     hosts.api!.merged.add(1);
     assert.ok((await syncMergeRequests(deps, slug)).ok);
 
-    // Now C2 builds in the web repo.
+    // Now C2 builds in the web repo, reading C1's merged api code (read-only), and so does its reviewer.
     const third = await run(deps, slug);
     assert.deepEqual(third?.build?.outcomes.map((o) => [o.changeId, o.result]), [['C2', 'awaiting_review']]);
-    assert.match(calls.filter((c) => c.mode === 'build').at(-1)!.cwd, /worktrees\/web\//);
+    const buildC2 = calls.filter((c) => c.mode === 'build').at(-1)!;
+    assert.match(buildC2.cwd, /worktrees\/web\//);
+    assert.deepEqual(buildC2.additionalDirectories, [apiSnap]);
+    assert.ok(sawDependencyCode, "the merged C1 code is in the api snapshot C2's agent reads");
+    assert.match(buildC2.prompt, /Code your change depends on \(read-only\)[\s\S]*api: .*_planning \(origin\/main at [0-9a-f]{8}; includes C1\)/);
+    assert.deepEqual(buildC1.additionalDirectories, [], 'C1 depends on nothing');
+    assert.deepEqual(calls.filter((c) => stageOf(c) === 'review').at(-1)!.additionalDirectories, [apiSnap]);
+    const startedC2 = (await deps.epics.load(slug)).find((ev) => ev.type === 'ChangeStarted' && ev.changeId === 'C2');
+    assert.ok(startedC2?.type === 'ChangeStarted' && startedC2.dependencySnapshots?.[0]?.repo === 'api', 'the log records which api commit C2 read');
     assert.ok((await approveChange(deps, slug, 'C2', undefined)).ok);
     assert.ok(sh(web.remote, 'rev-parse', `forge/${slug}/C2`));
     assert.equal(hosts.web!.opened.length, 1);

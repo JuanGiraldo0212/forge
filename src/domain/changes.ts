@@ -167,6 +167,24 @@ export const selectBatch = (ready: readonly ChangeState[], maxParallel: number):
 export const undeclaredChanges = (spec: ApprovedChange, changed: readonly string[]): readonly string[] =>
   changed.filter((f) => !spec.files.includes(f));
 
+/** Every approved change `changeId` depends on, directly or through other changes, in dependency order. */
+export const transitiveDependencies = (changes: readonly ChangeState[], changeId: string): readonly ApprovedChange[] => {
+  const byId = new Map(changes.flatMap((c) => (c.spec ? [[c.id, c.spec] as const] : [])));
+  const seen = new Set<string>();
+  const out: ApprovedChange[] = [];
+  const visit = (id: string) => {
+    for (const dep of byId.get(id)?.dependsOn ?? []) {
+      if (seen.has(dep)) continue;
+      seen.add(dep);
+      visit(dep);
+      const spec = byId.get(dep);
+      if (spec) out.push(spec);
+    }
+  };
+  visit(changeId);
+  return out;
+};
+
 /** Live changes that list `changeId` as a dependency. */
 export const dependentsOf = (changes: readonly ChangeState[], changeId: string): readonly string[] =>
   changes.filter((c) => c.status !== 'dropped' && c.spec?.dependsOn.includes(changeId)).map((c) => c.id);

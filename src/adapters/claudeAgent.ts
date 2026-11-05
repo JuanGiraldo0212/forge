@@ -4,6 +4,7 @@
  * read  mode: Read/Grep/Glob only.
  * build mode: edits + Bash, with Bash inside the SDK sandbox (writes limited to the worktree,
  *             network limited to an allowlist, credential files unreadable) and secrets stripped from env.
+ *             Additional directories (other repos' code) are read-only: Edit and Write are denied there.
  * Worktrees are not containers; see README "Isolation" before running on untrusted input.
  */
 import { createSdkMcpServer, query, tool, type Options, type SDKMessage, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
@@ -160,11 +161,12 @@ export const optionsFor = (req: AgentRequest, opts: ClaudeAgentOptions, abortCon
       hooks: { PostToolUse: [{ matcher: ASK_TOOL, hooks: [async () => ({ continue: false, stopReason: 'Waiting for the human to answer.' })] }] },
     };
   if (req.mode === 'read') return { ...base, tools: READ_TOOLS, allowedTools: READ_TOOLS, disallowedTools: denyRead };
+  const readOnly = (req.additionalDirectories ?? []).flatMap((d) => [`Edit(/${d}/**)`, `Write(/${d}/**)`]);
   return {
     ...base,
     tools: BUILD_TOOLS,
     allowedTools: BUILD_TOOLS,
-    disallowedTools: [...BUILD_DENY, ...denyRead],
+    disallowedTools: [...BUILD_DENY, ...denyRead, ...readOnly],
     sandbox: {
       enabled: true,
       failIfUnavailable: true,

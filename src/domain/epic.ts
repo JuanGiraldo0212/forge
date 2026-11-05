@@ -220,7 +220,12 @@ type EventBody =
   | ({ readonly type: 'ChangeSpecApproved'; readonly spec: ApprovedChange; readonly note?: string } & ChangeRef)
   | ({ readonly type: 'ChangeSpecRevisionRequested'; readonly note: string } & ChangeRef)
   | ({ readonly type: 'ChangeDropped'; readonly note: string } & ChangeRef)
-  | ({ readonly type: 'ChangeStarted'; readonly branch: string } & ChangeRef)
+  | ({
+      readonly type: 'ChangeStarted';
+      readonly branch: string;
+      /** Read-only snapshots of other repos holding merged dependencies, as the agent saw them. */
+      readonly dependencySnapshots?: readonly RepoSnapshot[];
+    } & ChangeRef)
   | ({
       readonly type: 'ChangeRoundFailed';
       readonly signature: string;
