@@ -184,6 +184,29 @@ npm run package                       # unpacked build in dist-desktop/ (drop --
 - **Agents stop when the app quits.** It asks first while agents are running. Only one action runs per
   epic at a time.
 
+### Remote workspaces (SSH)
+
+Forge can run on another machine while the app shows the UI, like an editor's remote mode. Use
+**Connect to SSH server…** on the welcome screen (or ⇄ in the sidebar footer), enter the host, port and
+username, and sign in with a **password**, a **key file** (with its passphrase) or your **SSH agent**.
+Then pick a workspace on the server from its folder browser (or a recent one). Agents, git, checks,
+worktrees and files all stay on the server.
+
+- **Server requirements:** Node.js 24+, npm and git, found through your login shell (nvm and the like
+  work). The first connection after each app update copies the forge server to
+  `~/.forge/server/<version>/` and runs `npm install` there, which also fetches the Claude Code binary
+  for the server's platform. Later connections start in a second or two.
+- **Host keys:** trusted on first use. The app shows the SHA256 fingerprint and asks before connecting;
+  if a trusted key changes, it warns and asks again.
+- **Secrets stay on your machine:** a remembered SSH password and the GitLab token are stored encrypted
+  in the local OS keychain. The token is handed to the server process over the connection, never on a
+  command line or on disk there.
+- **Claude credentials:** with *Let agents on the server use this machine's Claude credentials*,
+  `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` from the app's environment are passed the same way.
+  Otherwise agents use whatever Claude login the server has.
+- **The server stops when you disconnect**, or when the connection drops, and with it any running
+  agents (as when the app quits locally). Disconnecting is refused while agents run.
+
 ## Architecture
 
 Hexagonal, functional TypeScript. There are no classes. Ports are records of functions, adapters
@@ -197,7 +220,8 @@ src/application/   use cases: stages (requirements, epic spec), changes (draft/a
 src/adapters/      fs, git (worktrees), gitlab (REST v4), claudeAgent (Agent SDK), process (checks)
 src/app/           composition root (one Vcs + CodeHost per configured repo) and workspace setup
 src/ui/            the actions behind the app's buttons
-src/desktop/       Electron: main (session, validated IPC handlers, settings), preload, renderer (React)
+src/desktop/       Electron: main (session, validated IPC handlers, settings, connection), preload, renderer (React)
+src/desktop/remote/ SSH transport, the forge server run on SSH hosts, and the JSON-lines RPC between them
 ```
 
 State is `replay(events)`, a pure fold over `epics/<slug>/events.jsonl`, and that log is also the

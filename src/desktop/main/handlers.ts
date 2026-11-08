@@ -9,7 +9,7 @@ import { readConfigFile, readLocalConfigFile, writeConfigFiles } from '../../ada
 import { applyRepoEdits, readRepoEdits, type RepoEdit } from '../../application/configEdit.ts';
 import { expand, findRepoRoot } from '../../app/compose.ts';
 import { initWorkspaceFiles } from '../../app/init.ts';
-import { inspectFolder } from './inspect.ts';
+import { inspectFolder, listDirectory } from './inspect.ts';
 import { changeDiff } from '../../application/build.ts';
 import { changeIssues } from '../../application/changes.ts';
 import { loadEpic } from '../../application/deps.ts';
@@ -33,15 +33,16 @@ import {
 } from '../../ui/actions.ts';
 import type { DocName, DocView, Method, RepoSettings, WorkspaceInfo } from '../shared/api.ts';
 import type { Session } from './session.ts';
-import type { Settings } from './settings.ts';
+import type { WorkspaceSettings } from './settings.ts';
 
 export type HandlerContext = {
   readonly session: () => Session | undefined;
   /** Opens (or reopens) a workspace and makes it current. */
   readonly open: (root: string) => Promise<{ readonly workspace: WorkspaceInfo | null; readonly error?: string }>;
-  readonly chooseFolder: () => Promise<string | undefined>;
+  /** Asks the user for a folder: a native dialog locally, a remote folder browser over SSH. */
+  readonly chooseFolder: (title: string) => Promise<string | undefined>;
   readonly openExternal: (url: string) => Promise<void>;
-  readonly settings: Settings;
+  readonly settings: WorkspaceSettings;
 };
 
 const slug = z.string().regex(/^[a-z0-9-]{1,64}$/);
@@ -92,6 +93,7 @@ const ARGS = {
   setGitlabToken: z.tuple([z.string().trim().min(1).max(1000).nullable()]),
   openExternal: z.tuple([z.string().max(2048).regex(/^https?:\/\//i, 'only http(s) links')]),
   busy: z.tuple([]),
+  listDirectory: z.tuple([z.string().max(4096).nullable()]),
 } satisfies Record<Method, z.ZodTuple>;
 
 
@@ -116,7 +118,7 @@ export const createHandlers = (ctx: HandlerContext) => {
   const impl: { readonly [M in Method]: (...args: z.infer<(typeof ARGS)[M]>) => Promise<unknown> } = {
     workspace: async () => session()?.info ?? null,
     chooseWorkspace: async () => {
-      const folder = await ctx.chooseFolder();
+      const folder = await ctx.chooseFolder('Open a forge workspace');
       return folder ? ctx.open(folder) : { workspace: session()?.info ?? null };
     },
     openWorkspace: (root) => ctx.open(root),
@@ -222,7 +224,7 @@ export const createHandlers = (ctx: HandlerContext) => {
       };
     },
     inspectRepo: async (path, workspaceRoot) => {
-      const folder = path ?? (await ctx.chooseFolder());
+      const folder = path ?? (await ctx.chooseFolder('Choose a code repository'));
       if (!folder) return null;
       const root = workspaceRoot ?? session()?.info.root;
       if (!root) return null;
@@ -259,7 +261,7 @@ export const createHandlers = (ctx: HandlerContext) => {
       };
     },
     chooseNewWorkspace: async () => {
-      const folder = await ctx.chooseFolder();
+      const folder = await ctx.chooseFolder('Choose the planning repo to set up');
       if (!folder) return { root: null };
       const root = await findRepoRoot(folder);
       if (!root.ok) return { root: null, error: 'Pick a git repository (your planning repo). Create one with "git init" first.' };
@@ -284,6 +286,7 @@ export const createHandlers = (ctx: HandlerContext) => {
       if (/^https?:\/\//i.test(url)) await ctx.openExternal(url);
     },
     busy: async () => session()?.busy() ?? [],
+    listDirectory: (path) => listDirectory(path),
   };
 
   /** Validates raw IPC arguments, then dispatches. */

@@ -2,9 +2,10 @@
  * Desktop app root: state, subscriptions to the main process, and the action runner.
  */
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import type { Outcome } from '../shared/api.ts';
+import type { ConnectionInfo, FolderRequest, Outcome } from '../shared/api.ts';
 import { AssignDialog, BackDialog, NewEpicDialog, NoteDialog, SettingsDialog, Welcome } from './components/Dialogs.tsx';
 import { DocPanel } from './components/DocPanel.tsx';
+import { ConnectDialog, RemoteFolderPicker } from './components/Remote.tsx';
 import { RepoDialog } from './components/RepoDialog.tsx';
 import { ChangeBar, ChangeList, EpicHeader } from './components/Epic.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
@@ -31,6 +32,9 @@ const Toast = ({ toast, onClose }: { toast: Outcome & { id: number }; onClose: (
 export const App = () => {
   const [s, dispatch] = useReducer(reducer, initialState);
   const [workspaceError, setWorkspaceError] = useState<string | undefined>();
+  const [connection, setConnection] = useState<ConnectionInfo>({ kind: 'local' });
+  const [connecting, setConnecting] = useState(false);
+  const [folderRequest, setFolderRequest] = useState<FolderRequest | undefined>();
   const ref = useRef(s);
   ref.current = s;
 
@@ -38,19 +42,39 @@ export const App = () => {
     dispatch({ type: 'epics', epics: await api().listEpics(), select });
   }, []);
 
+  /** Reloads everything from the active backend (this machine, or the connected SSH host). */
+  const refresh = useCallback(async () => {
+    const [workspace, recent, busy, conn] = await Promise.all([api().workspace(), api().recentWorkspaces(), api().busy(), api().connection()]);
+    setConnection(conn);
+    dispatch({ type: 'workspace', workspace, recent });
+    dispatch({ type: 'busy', busy });
+    if (workspace) await reload();
+  }, [reload]);
+
   useEffect(() => {
-    void (async () => {
-      const [workspace, recent, busy] = await Promise.all([api().workspace(), api().recentWorkspaces(), api().busy()]);
-      dispatch({ type: 'workspace', workspace, recent });
-      dispatch({ type: 'busy', busy });
-      if (workspace) await reload();
-    })();
+    void refresh();
     const offs = [
       api().onEpicsChanged(() => void reload()),
       api().onBusy((busy) => dispatch({ type: 'busy', busy })),
+      api().onConnectionChanged((change) => {
+        setWorkspaceError(undefined);
+        setFolderRequest(undefined);
+        if (change.error) dispatch({ type: 'toast', outcome: { ok: false, text: change.error, tone: 'error' } });
+        void refresh();
+      }),
+      api().onPickFolder(setFolderRequest),
     ];
     return () => offs.forEach((off) => off());
-  }, [reload]);
+  }, [reload, refresh]);
+
+  const disconnect = async () => dispatch({ type: 'toast', outcome: await api().disconnectRemote() });
+
+  const remoteDialogs = (
+    <>
+      {connecting && <ConnectDialog onClose={() => setConnecting(false)} onConnected={() => setConnecting(false)} />}
+      {folderRequest && <RemoteFolderPicker request={folderRequest} onDone={() => setFolderRequest(undefined)} />}
+    </>
+  );
 
   const show = useCallback(
     async (o: Outcome) => {
@@ -118,6 +142,9 @@ export const App = () => {
         <Welcome
           recent={s.recent}
           error={workspaceError}
+          connection={connection}
+          onConnect={() => setConnecting(true)}
+          onDisconnect={() => void disconnect()}
           onChoose={() => void switchTo(api().chooseWorkspace())}
           onOpen={(root) => void switchTo(api().openWorkspace(root))}
           onSetup={async () => {
@@ -129,6 +156,7 @@ export const App = () => {
         {s.dialog?.kind === 'repos' && (
           <RepoDialog setupRoot={s.dialog.setupRoot} onClose={() => dispatch({ type: 'dialog', dialog: undefined })} onSaved={afterRepos} />
         )}
+        {remoteDialogs}
         {s.toast && <Toast toast={s.toast} onClose={() => dispatch({ type: 'toast', outcome: undefined })} />}
       </>
     );
@@ -146,6 +174,9 @@ export const App = () => {
       <Sidebar
         state={s}
         workspace={s.workspace}
+        connection={connection}
+        onConnect={() => setConnecting(true)}
+        onDisconnect={() => void disconnect()}
         onSelect={(slug) => dispatch({ type: 'select', slug })}
         onFilter={(filter) => dispatch({ type: 'filter', filter })}
         onNew={() => dispatch({ type: 'dialog', dialog: { kind: 'new-epic' } })}
@@ -253,6 +284,7 @@ export const App = () => {
         />
       )}
       {dialog?.kind === 'repos' && <RepoDialog setupRoot={dialog.setupRoot} onClose={() => dispatch({ type: 'dialog', dialog: undefined })} onSaved={afterRepos} />}
+      {remoteDialogs}
       {s.toast && <Toast toast={s.toast} onClose={() => dispatch({ type: 'toast', outcome: undefined })} />}
     </div>
   );

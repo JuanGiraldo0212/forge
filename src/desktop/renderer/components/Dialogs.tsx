@@ -2,11 +2,11 @@
  * Modal dialogs: notes and feedback, new epic, send back, owner, settings, and the welcome screen.
  */
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import type { WorkspaceInfo } from '../../shared/api.ts';
+import type { ConnectionInfo, WorkspaceInfo } from '../../shared/api.ts';
 import type { NoteSpec } from '../model.ts';
 import { Button } from './ui.tsx';
 
-const Modal = ({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) => {
+export const Modal = ({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) => {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', onKey);
@@ -22,7 +22,7 @@ const Modal = ({ title, onClose, children }: { title: string; onClose: () => voi
   );
 };
 
-const useSubmit = (fn: () => Promise<void> | void) => {
+export const useSubmit = (fn: () => Promise<void> | void) => {
   const [pending, setPending] = useState(false);
   const submit = async (e?: FormEvent) => {
     e?.preventDefault();
@@ -228,35 +228,60 @@ export const SettingsDialog = ({
 export const Welcome = ({
   recent,
   error,
+  connection,
   onChoose,
   onOpen,
   onSetup,
+  onConnect,
+  onDisconnect,
 }: {
   recent: readonly string[];
   error?: string;
+  connection: ConnectionInfo;
   onChoose: () => void;
   onOpen: (root: string) => void;
   onSetup: () => void;
+  onConnect: () => void;
+  onDisconnect: () => void;
 }) => {
+  const remote = connection.kind === 'remote' ? connection : undefined;
   return (
     <div className="welcome">
       <h1>
         <span className="logo">forge</span>
       </h1>
       <p>Epics to merge requests, with a human decision at every step.</p>
+      {remote && (
+        <div className="banner banner-info connection-banner">
+          <span>
+            Connected to <strong>{remote.label}</strong>. Workspaces, agents and checks run there.
+          </span>
+          <Button kind="ghost" onClick={onDisconnect}>
+            Disconnect
+          </Button>
+        </div>
+      )}
       {error && <div className="banner banner-bad">{error}</div>}
       <div className="actions" style={{ justifyContent: 'flex-start' }}>
         <Button kind="primary" onClick={onChoose}>
-          Open workspace…
+          {remote ? 'Open workspace on the server…' : 'Open workspace…'}
         </Button>
         <Button kind="secondary" onClick={onSetup}>
           Set up a new workspace…
         </Button>
+        {!remote && (
+          <Button kind="secondary" onClick={onConnect}>
+            Connect to SSH server…
+          </Button>
+        )}
       </div>
-      <p className="muted small">Open a planning repo (or a code repo) that has .forge/config.yaml, or set up forge in an empty planning repo and add your code repos.</p>
+      <p className="muted small">
+        Open a planning repo (or a code repo) that has .forge/config.yaml, or set up forge in an empty planning repo and add your code repos.
+        {!remote && ' To run everything on another machine, connect to it over SSH.'}
+      </p>
       {recent.length > 0 && (
         <>
-          <h2>Recent</h2>
+          <h2>{remote ? `Recent on ${remote.label}` : 'Recent'}</h2>
           <ul className="recent">
             {recent.map((r) => (
               <li key={r}>

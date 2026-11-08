@@ -1,15 +1,19 @@
 /**
- * Electron main process: windows, IPC, and the workspace session. All forge logic (agents, git, files)
- * runs here, in Node; the renderer only talks to it through the validated ForgeApi.
+ * Electron main process: windows, IPC, and the workspace backend. All forge logic (agents, git, files)
+ * runs here, in Node, or on an SSH host the app is connected to; the renderer only talks to it through
+ * the validated ForgeApi.
  */
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, session as electronSession, shell } from 'electron';
+import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { channel, EVENTS, METHODS, type WorkspaceInfo } from '../shared/api.ts';
+import { startRemote } from '../remote/client.ts';
+import { channel, CONNECTION_METHODS, EVENTS, METHODS } from '../shared/api.ts';
+import { workspaceBackend } from './backend.ts';
 import { runCaptureScript } from './capture.ts';
-import { createHandlers } from './handlers.ts';
-import { openSession, type Session } from './session.ts';
+import { connectionManager } from './connection.ts';
+import { loadServerBundle } from './serverBundle.ts';
 import { fileSettings } from './settings.ts';
 import { fixPath } from './shellEnv.ts';
 
@@ -30,7 +34,6 @@ const agentExecutable = (): string | undefined => {
 };
 
 let window: BrowserWindow | undefined;
-let current: Session | undefined;
 
 const send = (event: string, payload?: unknown) => {
   if (window && !window.isDestroyed()) window.webContents.send(event, payload);
@@ -42,47 +45,42 @@ const settings = fileSettings(join(app.getPath('userData'), 'forge-settings.json
   decrypt: (cipher) => safeStorage.decryptString(cipher),
 });
 
-const open = async (root: string): Promise<{ workspace: WorkspaceInfo | null; error?: string }> => {
-  if (current?.busy().length)
-    return { workspace: current.info, error: 'Agents are running in this workspace. Stop them before switching.' };
-  const next = await openSession(
-    root,
-    settings,
-    {
-      epicsChanged: () => send(EVENTS.epicsChanged),
-      busy: (busy) => send(EVENTS.busy, busy),
-    },
-    { agentExecutable: agentExecutable() },
-  );
-  if (!next.ok) return { workspace: current?.info ?? null, error: next.error };
-  current?.close();
-  current = next.value;
-  await settings.addRecent(current.info.root);
-  window?.setTitle(`forge — ${current.info.name}`);
-  send(EVENTS.epicsChanged);
-  return { workspace: current.info };
+const chooseFolder = async (title: string) => {
+  const result = await dialog.showOpenDialog(window!, { title, properties: ['openDirectory'] });
+  return result.canceled ? undefined : result.filePaths[0];
 };
 
-const handlers = createHandlers({
-  session: () => current,
-  open,
-  chooseFolder: async () => {
-    const result = await dialog.showOpenDialog(window!, {
-      title: 'Open a forge workspace',
-      message: 'Choose the planning repo (or a code repo) that has .forge/config.yaml',
-      properties: ['openDirectory'],
-    });
-    return result.canceled ? undefined : result.filePaths[0];
-  },
-  openExternal: (url) => shell.openExternal(url),
+const local = workspaceBackend({
   settings,
+  chooseFolder,
+  openExternal: (url) => shell.openExternal(url),
+  // While connected to a host, the UI shows the host's workspace; local events would only confuse it.
+  events: {
+    epicsChanged: () => !connections.isRemote() && send(EVENTS.epicsChanged),
+    busy: (busy) => !connections.isRemote() && send(EVENTS.busy, busy),
+    opened: (info) => !connections.isRemote() && window?.setTitle(`forge — ${info.name}`),
+  },
+  agentExecutable: agentExecutable(),
 });
 
-for (const method of METHODS) {
+const connections = connectionManager({
+  settings,
+  local,
+  bundle: () => loadServerBundle(here),
+  start: startRemote,
+  readFile: (path) => readFile(path),
+  env: process.env,
+  send: (event, payload) => send(EVENTS[event], payload),
+  shown: (workspace, connection) =>
+    window?.setTitle(['forge', workspace?.name, connection.kind === 'remote' ? connection.label : undefined].filter(Boolean).join(' — ')),
+  log: (line) => console.warn(line),
+});
+
+for (const method of [...METHODS, ...CONNECTION_METHODS]) {
   ipcMain.handle(channel(method), (event, ...args: unknown[]) => {
     // Only our own window may call in.
     if (event.sender !== window?.webContents) throw new Error('Unknown sender');
-    return handlers.dispatch(method, args);
+    return connections.dispatch(method, args);
   });
 }
 
@@ -122,20 +120,21 @@ const createWindow = () => {
 /** Agents run in this process: quitting stops them, so ask first. */
 let quitting = false;
 app.on('before-quit', (e) => {
-  const busy = current?.busy() ?? [];
+  const busy = connections.busy();
   if (quitting || busy.length === 0 || process.env.FORGE_DESKTOP_CAPTURE) return;
+  const where = connections.connection();
   e.preventDefault();
   const choice = dialog.showMessageBoxSync(window!, {
     type: 'warning',
     buttons: ['Keep running', 'Stop agents and quit'],
     defaultId: 0,
     cancelId: 0,
-    message: `Agents are running on ${busy.join(', ')}.`,
+    message: `Agents are running on ${busy.join(', ')}${where.kind === 'remote' ? ` (on ${where.label})` : ''}.`,
     detail: 'Quitting stops them. Interrupted changes are handed back to you the next time you run them.',
   });
   if (choice === 1) {
     quitting = true;
-    current?.close();
+    connections.close();
     app.quit();
   }
 });
@@ -164,7 +163,7 @@ app.whenReady().then(async () => {
   electronSession.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
 
   const initial = process.env.FORGE_WORKSPACE ?? (await settings.recent())[0];
-  if (initial) await open(initial);
+  if (initial) await local.dispatch('openWorkspace', [initial]);
 
   createWindow();
   if (process.env.FORGE_DESKTOP_CAPTURE && window) void runCaptureScript(window, process.env.FORGE_DESKTOP_CAPTURE).finally(() => app.exit(0));

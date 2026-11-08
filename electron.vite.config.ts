@@ -6,7 +6,8 @@ export default defineConfig({
     build: {
       // Keep node_modules (Agent SDK and its native binary, yaml, zod) as runtime requires, not bundled.
       externalizeDeps: true,
-      rolldownOptions: { input: { index: 'src/desktop/main/index.ts' } },
+      // server.js is the forge server the app uploads to SSH hosts (see src/desktop/remote).
+      rolldownOptions: { input: { index: 'src/desktop/main/index.ts', server: 'src/desktop/remote/serverMain.ts' } },
     },
   },
   preload: {

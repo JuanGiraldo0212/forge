@@ -9,7 +9,7 @@ import type { Deps } from '../../application/deps.ts';
 import { composeDeps, findRepoRoot } from '../../app/compose.ts';
 import { err, ok, type Result } from '../../domain/result.ts';
 import type { WorkspaceInfo } from '../shared/api.ts';
-import type { Settings } from './settings.ts';
+import type { WorkspaceSettings } from './settings.ts';
 
 export type SessionEvents = {
   readonly epicsChanged: () => void;
@@ -28,7 +28,7 @@ export type Session = {
 
 export const openSession = async (
   path: string,
-  settings: Settings,
+  settings: WorkspaceSettings,
   events: SessionEvents,
   options: { readonly agentExecutable?: string } = {},
 ): Promise<Result<Session, string>> => {

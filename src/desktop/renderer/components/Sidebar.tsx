@@ -1,11 +1,14 @@
 import { STAGE_LABEL } from '../../../domain/epic.ts';
-import type { WorkspaceInfo } from '../../shared/api.ts';
+import type { ConnectionInfo, WorkspaceInfo } from '../../shared/api.ts';
 import { needsHuman, visibleEpics, type State } from '../model.ts';
 import { Avatar, Button, Chip, Spinner } from './ui.tsx';
 
 export const Sidebar = ({
   state,
   workspace,
+  connection,
+  onConnect,
+  onDisconnect,
   onSelect,
   onFilter,
   onNew,
@@ -15,6 +18,9 @@ export const Sidebar = ({
 }: {
   state: State;
   workspace: WorkspaceInfo;
+  connection: ConnectionInfo;
+  onConnect: () => void;
+  onDisconnect: () => void;
   onSelect: (slug: string) => void;
   onFilter: (f: 'all' | 'mine') => void;
   onNew: () => void;
@@ -80,6 +86,15 @@ export const Sidebar = ({
         <span className="who" title="Who forge records as the actor (git config user.email)">
           {workspace.actor}
         </span>
+        {connection.kind === 'remote' ? (
+          <button className="chip chip-button connection-chip" onClick={onDisconnect} title={`Forge runs on ${connection.label}. Click to disconnect.`}>
+            ⇄ {connection.label}
+          </button>
+        ) : (
+          <button className="icon-btn" onClick={onConnect} title="Connect to an SSH server and run forge there">
+            ⇄
+          </button>
+        )}
         <button className="icon-btn" onClick={onSettings} title="Settings">
           ⚙
         </button>

@@ -3,8 +3,9 @@
  * branch, and setup/check commands (from the project's own files). Suggestions only; the user edits them.
  */
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { basename, join, relative } from 'node:path';
+import { readdir, readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { exec } from '../../adapters/process.ts';
 import type { CheckEdit } from '../../application/configEdit.ts';
 
@@ -115,4 +116,36 @@ export const inspectFolder = async (folder: string, workspaceRoot: string, gitla
     checks,
     warnings,
   };
+};
+
+export type DirEntry = { readonly name: string; readonly path: string; readonly git: boolean; readonly forge: boolean };
+
+export type DirListing = {
+  readonly path: string;
+  /** null at the file system root. */
+  readonly parent: string | null;
+  readonly entries: readonly DirEntry[];
+  readonly error?: string;
+};
+
+const MAX_ENTRIES = 500;
+
+/** Sub-folders of `path` (default: home), hidden ones left out, marking git clones and forge workspaces. */
+export const listDirectory = async (path: string | null): Promise<DirListing> => {
+  const dir = resolve(path === null || path === '~' ? homedir() : path.startsWith('~/') ? join(homedir(), path.slice(2)) : path);
+  const parent = dirname(dir) === dir ? null : dirname(dir);
+  try {
+    const entries = (await readdir(dir, { withFileTypes: true }))
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+      .map((e) => e.name)
+      .sort((a, b) => a.localeCompare(b))
+      .slice(0, MAX_ENTRIES)
+      .map((name) => {
+        const full = join(dir, name);
+        return { name, path: full, git: existsSync(join(full, '.git')), forge: existsSync(join(full, '.forge', 'config.yaml')) };
+      });
+    return { path: dir, parent, entries };
+  } catch (e) {
+    return { path: dir, parent, entries: [], error: `Can't read ${dir}: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}` };
+  }
 };
