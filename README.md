@@ -299,7 +299,7 @@ running total, so forge records only what each run added.
 
 ## Verified
 
-- `npm run check`: typecheck plus 100 tests, covering:
+- `npm run check`: typecheck plus 97 tests, covering:
   - the domain rules: lifecycle, change specs, cross-repo dependencies, cost;
   - end-to-end runs with real git and bare remotes:
     - a two-repo epic: per-change approval, a single redraft, a dropped change, a cross-repo

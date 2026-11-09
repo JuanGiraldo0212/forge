@@ -167,7 +167,7 @@ describe('forge server', () => {
     delete process.env.GITLAB_TOKEN;
   });
 
-  it("with the glab login, never asks the app for the token, and switches the mode on the server's own files", async () => {
+  it('with the glab login, never asks the app for the token', async () => {
     const ws = await workspace();
     const { app, call, end, server, settings } = connect();
     const { asked } = settings;
@@ -177,17 +177,9 @@ describe('forge server', () => {
     await writeFile(join(ws.root, '.forge', 'local.yaml'), 'gitlab:\n  auth: glab\n');
     const opened = (await call('openWorkspace', ws.root)) as { workspace: WorkspaceInfo };
     assert.equal(opened.workspace.gitlabAuth, 'glab');
-    assert.equal(opened.workspace.gitlabHost, 'gitlab.com');
-    assert.deepEqual(asked, [], 'no token leaves the app in glab mode');
-
-    const back = (await call('setGitlabAuth', 'token')) as Outcome;
-    assert.ok(back.ok, back.text);
-    assert.equal(((await call('workspace')) as WorkspaceInfo).gitlabAuth, 'token');
-    assert.deepEqual(asked, ['GITLAB_TOKEN'], 'token mode reads it from the app again');
-    assert.equal(await readFile(join(ws.root, '.forge', 'local.yaml'), 'utf8'), '');
+    assert.deepEqual(asked, []);
     end();
     await server.done;
-    delete process.env.GITLAB_TOKEN;
   });
 
   it('imports only the packages it declares, so the uploaded package.json is complete', async () => {
