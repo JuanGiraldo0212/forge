@@ -4,11 +4,13 @@
  */
 import type { Epic } from '../../domain/epic.ts';
 import type { RepoEdit } from '../../application/configEdit.ts';
+import type { GitlabAuth } from '../../application/config.ts';
+import type { GitlabAccess } from '../../ports/index.ts';
 import type { Outcome } from '../../ui/actions.ts';
 import type { DirListing, RepoGuess } from '../main/inspect.ts';
 import type { HostEntry, SshAuthKind } from '../main/settings.ts';
 
-export type { DirListing, HostEntry, Outcome, RepoEdit, RepoGuess, SshAuthKind };
+export type { DirListing, GitlabAccess, GitlabAuth, HostEntry, Outcome, RepoEdit, RepoGuess, SshAuthKind };
 
 export type RepoEditView = RepoEdit & {
   /** Where the clone is on this machine (local path, else shared path), absolute. */
@@ -30,6 +32,10 @@ export type WorkspaceInfo = {
   readonly actor: string;
   readonly repos: readonly RepoInfo[];
   readonly warnings: readonly string[];
+  /** How forge signs its GitLab API calls on the machine it runs on: a token, or that machine's glab login. */
+  readonly gitlabAuth: GitlabAuth;
+  /** The GitLab instance's host[:port], from gitlab.baseUrl. */
+  readonly gitlabHost: string;
   readonly tokenEnv: string;
   readonly gitlabTokenSet: boolean;
   /** Whether the OS keychain can store the GitLab token. */
@@ -125,6 +131,10 @@ export type ForgeApi = {
   readonly chooseNewWorkspace: () => Promise<{ readonly root: string | null; readonly error?: string }>;
 
   readonly setGitlabToken: (token: string | null) => Promise<Outcome>;
+  /** Switches how forge signs in to GitLab, for this machine (saved in .forge/local.yaml), and reopens the workspace. */
+  readonly setGitlabAuth: (auth: GitlabAuth) => Promise<Outcome>;
+  /** Checks the GitLab sign-in where forge runs (the SSH host when connected); null without a workspace. */
+  readonly gitlabAccess: () => Promise<GitlabAccess | null>;
   readonly openExternal: (url: string) => Promise<void>;
   readonly busy: () => Promise<readonly string[]>;
 
@@ -180,6 +190,8 @@ export const METHODS = [
   'saveRepos',
   'chooseNewWorkspace',
   'setGitlabToken',
+  'setGitlabAuth',
+  'gitlabAccess',
   'openExternal',
   'busy',
   'listDirectory',

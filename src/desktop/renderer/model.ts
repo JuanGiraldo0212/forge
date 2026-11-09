@@ -2,7 +2,7 @@
  * Renderer view model: pure state, reducer and "what can I do here" rules. No React, no DOM, no IPC.
  */
 import { changeSetApproved, DOC_STAGES, needsHuman, stageDialog, stageIndex, type ChangeState, type DocStage, type Epic, type Stage } from '../../domain/epic.ts';
-import type { Outcome, WorkspaceInfo } from '../shared/api.ts';
+import type { ConnectionInfo, GitlabAccess, Outcome, WorkspaceInfo } from '../shared/api.ts';
 
 export type Tab = 'idea' | 'questions' | 'requirements' | 'spec' | 'change' | 'review' | 'diff' | 'history';
 
@@ -343,3 +343,35 @@ export const epicHint = (e: Epic, busy: boolean): string => {
 };
 
 export { needsHuman };
+
+/** The machine forge runs on, as the settings screen names it. */
+export const coreMachine = (connection: ConnectionInfo): string =>
+  connection.kind === 'remote' ? `the server (${connection.label})` : 'this computer';
+
+export type GitlabAccessView = {
+  readonly tone: 'good' | 'bad' | 'info';
+  readonly text: string;
+  /** A command to run on that machine to fix it. */
+  readonly command?: string;
+};
+
+/** What the settings screen says about the GitLab sign-in, naming the machine the check ran on. */
+export const gitlabAccessView = (access: GitlabAccess, connection: ConnectionInfo): GitlabAccessView => {
+  const machine = coreMachine(connection);
+  switch (access.kind) {
+    case 'ready':
+      return { tone: 'good', text: access.user ? `Signed in as ${access.user} on ${access.host}, with glab on ${machine}.` : `Ready to use ${access.host}.` };
+    case 'no_token':
+      return { tone: 'bad', text: `No GitLab token for ${access.host}. Save one here, or set ${access.tokenEnv} in the environment that starts forge on ${machine}.` };
+    case 'glab_missing':
+      return { tone: 'bad', text: `glab (the GitLab CLI) isn't installed on ${machine}, or isn't on its PATH. Install it from https://gitlab.com/gitlab-org/cli, then check again.` };
+    case 'glab_signed_out':
+      return { tone: 'bad', text: `glab on ${machine} isn't signed in to ${access.host}. Run this there, then check again:`, command: `glab auth login --hostname ${access.host}` };
+    case 'unreachable':
+      return { tone: 'info', text: `Couldn't check the glab login on ${machine}: ${access.detail}` };
+    default: {
+      const unhandled: never = access;
+      return unhandled;
+    }
+  }
+};

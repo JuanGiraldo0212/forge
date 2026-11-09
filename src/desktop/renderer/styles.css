@@ -487,6 +487,11 @@ a {
   color: var(--bad);
 }
 
+.banner-good {
+  background: var(--good-soft);
+  color: var(--good);
+}
+
 .banner-info {
   background: var(--info-soft);
   color: var(--info);

@@ -141,8 +141,9 @@ describe('desktop view model', () => {
 const fakeSession = (deps: Deps): Session => {
   const running = new Map<string, AbortController>();
   return {
-    info: { root: deps.workspaceRoot, name: 'ws', actor: deps.actor, repos: [], warnings: [], tokenEnv: 'GITLAB_TOKEN', gitlabTokenSet: false, canStoreToken: false },
+    info: { root: deps.workspaceRoot, name: 'ws', actor: deps.actor, repos: [], warnings: [], gitlabAuth: 'token', gitlabHost: 'gitlab.com', tokenEnv: 'GITLAB_TOKEN', gitlabTokenSet: false, canStoreToken: false },
     deps,
+    gitlabAccess: async () => ({ kind: 'no_token', host: 'gitlab.com', tokenEnv: 'GITLAB_TOKEN' }),
     busy: () => [...running.keys()],
     exclusive: async (slug, work) => {
       if (running.has(slug)) return { ok: false, error: `"${slug}" is already running.` };

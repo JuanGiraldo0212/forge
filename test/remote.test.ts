@@ -41,15 +41,17 @@ const keychain: Keychain = {
   decrypt: (cipher) => cipher.toString().replace(/^enc:/, ''),
 };
 
-const memorySettings = (): WorkspaceSettings & { tokens: Map<string, string>; recents: string[] } => {
+const memorySettings = (): WorkspaceSettings & { tokens: Map<string, string>; recents: string[]; asked: string[] } => {
   const tokens = new Map<string, string>();
   const recents: string[] = [];
+  const asked: string[] = [];
   return {
     tokens,
     recents,
+    asked,
     recent: async () => recents,
     addRecent: async (root) => void recents.unshift(root),
-    token: async (env) => tokens.get(env),
+    token: async (env) => (asked.push(env), tokens.get(env)),
     setToken: async (env, token) => (token ? tokens.set(env, token) : tokens.delete(env), ok(undefined)),
     canStoreToken: () => true,
   };
@@ -160,6 +162,29 @@ describe('forge server', () => {
     const created = (await call('createEpic', 'Due dates', 'Todos get due dates')) as Outcome;
     assert.ok(created.ok, created.text);
     assert.ok(existsSync(join(ws.root, 'epics', 'due-dates', 'idea.md')));
+    end();
+    await server.done;
+    delete process.env.GITLAB_TOKEN;
+  });
+
+  it("with the glab login, never asks the app for the token, and switches the mode on the server's own files", async () => {
+    const ws = await workspace();
+    const { app, call, end, server, settings } = connect();
+    const { asked } = settings;
+    settings.tokens.set('GITLAB_TOKEN', 'glpat-from-app');
+    await app.request('hello', { protocol: PROTOCOL, env: {}, canStoreToken: true });
+
+    await writeFile(join(ws.root, '.forge', 'local.yaml'), 'gitlab:\n  auth: glab\n');
+    const opened = (await call('openWorkspace', ws.root)) as { workspace: WorkspaceInfo };
+    assert.equal(opened.workspace.gitlabAuth, 'glab');
+    assert.equal(opened.workspace.gitlabHost, 'gitlab.com');
+    assert.deepEqual(asked, [], 'no token leaves the app in glab mode');
+
+    const back = (await call('setGitlabAuth', 'token')) as Outcome;
+    assert.ok(back.ok, back.text);
+    assert.equal(((await call('workspace')) as WorkspaceInfo).gitlabAuth, 'token');
+    assert.deepEqual(asked, ['GITLAB_TOKEN'], 'token mode reads it from the app again');
+    assert.equal(await readFile(join(ws.root, '.forge', 'local.yaml'), 'utf8'), '');
     end();
     await server.done;
     delete process.env.GITLAB_TOKEN;

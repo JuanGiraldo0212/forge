@@ -138,6 +138,18 @@ export type CodeHost = {
   readonly getMergeRequest: (iid: number) => Promise<Result<MergeRequestState, PortError>>;
 };
 
+/**
+ * Whether forge can call GitLab's API with the workspace's sign-in, as seen from the machine forge runs on.
+ * `user` is known only when the check asked GitLab (the glab login); a stored token is not tried until it is used.
+ */
+export type GitlabAccess =
+  | { readonly kind: 'ready'; readonly host: string; readonly user?: string }
+  | { readonly kind: 'no_token'; readonly host: string; readonly tokenEnv: string }
+  | { readonly kind: 'glab_missing'; readonly host: string }
+  | { readonly kind: 'glab_signed_out'; readonly host: string; readonly detail: string }
+  /** The check itself failed (network, timeout, an unexpected answer); says nothing about the login. */
+  | { readonly kind: 'unreachable'; readonly host: string; readonly detail: string };
+
 export type Check = { readonly name: string; readonly run: string };
 export type CheckResult = { readonly name: string; readonly passed: boolean; readonly output: string };
 
