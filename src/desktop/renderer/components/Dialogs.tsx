@@ -2,9 +2,10 @@
  * Modal dialogs: notes and feedback, new epic, send back, owner, settings, and the welcome screen.
  */
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import type { ConnectionInfo, GitlabAccess, GitlabAuth, WorkspaceInfo } from '../../shared/api.ts';
+import type { ConnectionInfo, GitlabAccess, GitlabAuth, UpdateView, WorkspaceInfo } from '../../shared/api.ts';
 import { coreMachine, gitlabAccessView, type NoteSpec } from '../model.ts';
 import { Button } from './ui.tsx';
+import { UpdateSection } from './Update.tsx';
 
 export const Modal = ({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) => {
   useEffect(() => {
@@ -212,16 +213,20 @@ const GlabStatus = ({ connection }: { connection: ConnectionInfo }) => {
 export const SettingsDialog = ({
   workspace,
   connection,
+  update,
   onToken,
   onAuth,
   onRepos,
+  onCheckUpdates,
   onClose,
 }: {
   workspace: WorkspaceInfo;
   connection: ConnectionInfo;
+  update: UpdateView | undefined;
   onToken: (token: string | null) => Promise<void>;
   onAuth: (auth: GitlabAuth) => Promise<void>;
   onRepos: () => void;
+  onCheckUpdates: () => void;
   onClose: () => void;
 }) => {
   const machine = coreMachine(connection);
@@ -276,6 +281,7 @@ export const SettingsDialog = ({
           Edit repositories…
         </Button>
       </section>
+      <UpdateSection update={update} onCheck={onCheckUpdates} />
       <div className="modal-actions">
         <Button kind="primary" onClick={onClose}>
           Done
