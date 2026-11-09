@@ -56,6 +56,25 @@ export type DocView = {
 
 export type HistoryEntry = { readonly at: string; readonly by: string; readonly text: string };
 
+/** Where this app's own update stands. Only the app updates itself; a connected SSH host runs whatever server the app uploads. */
+export type UpdateStatus =
+  | { readonly kind: 'off'; readonly reason: string }
+  | { readonly kind: 'idle' }
+  | { readonly kind: 'checking' }
+  | { readonly kind: 'current'; readonly checkedAt: string }
+  | { readonly kind: 'downloading'; readonly version: string; readonly percent: number }
+  /** Downloaded and waiting for a restart. `problem` is why the last install attempt failed. */
+  | { readonly kind: 'ready'; readonly version: string; readonly problem?: string }
+  | { readonly kind: 'installing'; readonly version: string }
+  /** A newer release this platform can't install in place (unsigned macOS); `url` is its download page. */
+  | { readonly kind: 'manual'; readonly version: string; readonly url: string }
+  | { readonly kind: 'failed'; readonly message: string };
+
+export type UpdateView = { readonly version: string; readonly status: UpdateStatus };
+
+/** A check is pointless while one runs, while downloading, or once an update waits for a restart. */
+export const canCheckForUpdates = (status: UpdateStatus): boolean => ['idle', 'current', 'manual', 'failed'].includes(status.kind);
+
 /** Where forge runs: in this app, or on an SSH host that the app is connected to. */
 export type ConnectionInfo =
   | { readonly kind: 'local' }
@@ -151,6 +170,11 @@ export type ForgeApi = {
   /** Answers a FolderRequest; null when the user cancelled. */
   readonly folderPicked: (id: number, path: string | null) => Promise<void>;
 
+  readonly updateState: () => Promise<UpdateView>;
+  readonly checkForUpdates: () => Promise<UpdateView>;
+  /** Installs the downloaded update and restarts, after asking about running agents. */
+  readonly restartToUpdate: () => Promise<Outcome>;
+
   /** Subscriptions return an unsubscribe function. */
   readonly onEpicsChanged: (fn: () => void) => () => void;
   readonly onBusy: (fn: (busy: readonly string[]) => void) => () => void;
@@ -158,6 +182,7 @@ export type ForgeApi = {
   readonly onConnectionStatus: (fn: (text: string) => void) => () => void;
   readonly onConnectionChanged: (fn: (change: ConnectionChange) => void) => () => void;
   readonly onPickFolder: (fn: (req: FolderRequest) => void) => () => void;
+  readonly onUpdateState: (fn: (view: UpdateView) => void) => () => void;
 };
 
 /** Request/response methods, in the order the preload exposes them. */
@@ -200,8 +225,12 @@ export const METHODS = [
 /** Methods about the connection itself; the app's main process answers these, never a remote host. */
 export const CONNECTION_METHODS = ['connection', 'savedHosts', 'connectRemote', 'disconnectRemote', 'forgetHost', 'folderPicked'] as const satisfies readonly (keyof ForgeApi)[];
 
+/** Methods about the app's own updates; the app's main process answers these, never a remote host. */
+export const UPDATE_METHODS = ['updateState', 'checkForUpdates', 'restartToUpdate'] as const satisfies readonly (keyof ForgeApi)[];
+
 export type Method = (typeof METHODS)[number];
 export type ConnectionMethod = (typeof CONNECTION_METHODS)[number];
+export type UpdateMethod = (typeof UPDATE_METHODS)[number];
 
 export const EVENTS = {
   epicsChanged: 'forge:event:epics-changed',
@@ -209,6 +238,7 @@ export const EVENTS = {
   connectionStatus: 'forge:event:connection-status',
   connectionChanged: 'forge:event:connection-changed',
   pickFolder: 'forge:event:pick-folder',
+  updateState: 'forge:event:update-state',
 } as const;
 
-export const channel = (m: Method | ConnectionMethod): string => `forge:${m}`;
+export const channel = (m: Method | ConnectionMethod | UpdateMethod): string => `forge:${m}`;

@@ -209,8 +209,8 @@ npm run package                       # unpacked build in dist-desktop/ (drop --
   the fix: an AppArmor profile for forge's Electron binary (recommended), or a setuid-root
   `chrome-sandbox`. Don't use `--no-sandbox`. The renderer shows agent-written content, and the
   sandbox is part of its protection. The `.deb` package should set up the helper when it's installed.
-- **Agents stop when the app quits.** It asks first while agents are running. Only one action runs per
-  epic at a time.
+- **Agents stop when the app quits.** It asks first while agents are running, and so does restarting
+  to install an update. Only one action runs per epic at a time.
 
 ### Remote workspaces (SSH)
 
@@ -238,6 +238,36 @@ worktrees and files all stay on the server.
   Otherwise agents use whatever Claude login the server has.
 - **The server stops when you disconnect**, or when the connection drops, and with it any running
   agents (as when the app quits locally). Disconnecting is refused while agents run.
+
+### Releases and updates
+
+The installed app checks GitHub Releases for a newer version 15 seconds after it starts and then every
+4 hours. It downloads the update in the background and shows **Forge x.y.z is ready** with a
+**Restart** button in the sidebar. If you don't restart, the update installs the next time you quit.
+**Settings → Updates** shows the version and the last check, and has **Check for updates**.
+
+- **Where it works:** the AppImage, the `.deb` (installed with `pkexec dpkg`, so it asks for your
+  password) and the Windows installer. macOS builds aren't signed yet, and macOS won't install an update
+  into an unsigned app, so a Mac shows **Download** and opens the release page instead.
+  `installsInPlace` in `src/desktop/main/updates.ts` changes that once releases are signed.
+- **Where it's off:** `npm start`, `npm run dev`, an unpacked build, and any install with
+  `FORGE_DISABLE_AUTO_UPDATE=1` set. Settings says why.
+- **SSH hosts** need nothing extra: after an update, the app uploads its new server the next time it
+  connects.
+
+To cut a release, bump `version` in `package.json`, commit, and push a matching tag:
+
+```bash
+npm version 0.2.0 --no-git-tag-version && git commit -am "Release 0.2.0"
+git tag v0.2.0 && git push origin main v0.2.0
+```
+
+`.github/workflows/release.yml` then creates a draft release with generated notes, builds the AppImage,
+`.deb`, Windows installer and macOS `.dmg`/`.zip` (arm64 and x64), and uploads them with the update
+manifests (`latest*.yml`). It publishes the release only after every platform has uploaded, because the
+updater ignores drafts and a half-uploaded release would offer some platforms nothing to download. To
+turn on signing, add the `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`, `APPLE_ID`,
+`APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`, `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` secrets.
 
 ## Architecture
 
@@ -341,4 +371,4 @@ running total, so forge records only what each run added.
 - A retro stage that turns escalations and findings into proposed rule files.
 - Stacked branches for dependent changes (today a dependent waits for its dependency to merge).
 - A lock against two app windows acting on the same epic (one window already allows only one action per epic).
-- Desktop: macOS signing and notarization, Windows signing, auto-update, an app icon. The build sandbox on Windows is untested.
+- Desktop: macOS signing and notarization (and so in-place updates on macOS), Windows signing, an app icon. The build sandbox on Windows is untested.

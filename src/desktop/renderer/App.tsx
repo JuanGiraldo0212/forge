@@ -2,13 +2,14 @@
  * Desktop app root: state, subscriptions to the main process, and the action runner.
  */
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import type { ConnectionInfo, FolderRequest, Outcome } from '../shared/api.ts';
+import type { ConnectionInfo, FolderRequest, Outcome, UpdateView } from '../shared/api.ts';
 import { AssignDialog, BackDialog, NewEpicDialog, NoteDialog, SettingsDialog, Welcome } from './components/Dialogs.tsx';
 import { DocPanel } from './components/DocPanel.tsx';
 import { ConnectDialog, RemoteFolderPicker } from './components/Remote.tsx';
 import { RepoDialog } from './components/RepoDialog.tsx';
 import { ChangeBar, ChangeList, EpicHeader } from './components/Epic.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
+import { UpdateNotice } from './components/Update.tsx';
 import { currentTab, currentView, initialState, reducer, selectedChange, selectedEpic, stageView, tabsFor, type ActionSpec } from './model.ts';
 
 const api = () => window.forge;
@@ -35,6 +36,7 @@ export const App = () => {
   const [connection, setConnection] = useState<ConnectionInfo>({ kind: 'local' });
   const [connecting, setConnecting] = useState(false);
   const [folderRequest, setFolderRequest] = useState<FolderRequest | undefined>();
+  const [update, setUpdate] = useState<UpdateView | undefined>();
   const ref = useRef(s);
   ref.current = s;
 
@@ -66,6 +68,15 @@ export const App = () => {
     ];
     return () => offs.forEach((off) => off());
   }, [reload, refresh]);
+
+  useEffect(() => {
+    void api().updateState().then(setUpdate);
+    return api().onUpdateState(setUpdate);
+  }, []);
+
+  const restartToUpdate = async () => dispatch({ type: 'toast', outcome: await api().restartToUpdate() });
+  const checkForUpdates = async () => setUpdate(await api().checkForUpdates());
+  const updateNotice = <UpdateNotice update={update} onRestart={() => void restartToUpdate()} onOpen={(url) => void api().openExternal(url)} />;
 
   const disconnect = async () => dispatch({ type: 'toast', outcome: await api().disconnectRemote() });
 
@@ -157,6 +168,7 @@ export const App = () => {
           <RepoDialog setupRoot={s.dialog.setupRoot} onClose={() => dispatch({ type: 'dialog', dialog: undefined })} onSaved={afterRepos} />
         )}
         {remoteDialogs}
+        <div className="welcome-update">{updateNotice}</div>
         {s.toast && <Toast toast={s.toast} onClose={() => dispatch({ type: 'toast', outcome: undefined })} />}
       </>
     );
@@ -183,6 +195,7 @@ export const App = () => {
         onSwitch={() => void switchTo(api().chooseWorkspace())}
         onSettings={() => dispatch({ type: 'dialog', dialog: { kind: 'settings' } })}
         onRepos={() => dispatch({ type: 'dialog', dialog: { kind: 'repos', setupRoot: null } })}
+        notice={updateNotice}
       />
       <main className="main">
         {!epic ? (
@@ -274,6 +287,8 @@ export const App = () => {
         <SettingsDialog
           workspace={s.workspace}
           connection={connection}
+          update={update}
+          onCheckUpdates={() => void checkForUpdates()}
           onClose={() => dispatch({ type: 'dialog', dialog: undefined })}
           onRepos={() => dispatch({ type: 'dialog', dialog: { kind: 'repos', setupRoot: null } })}
           onToken={async (token) => {
