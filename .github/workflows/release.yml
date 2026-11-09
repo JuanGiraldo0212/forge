@@ -70,7 +70,12 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npx electron-builder ${{ matrix.targets }} --publish always
+        run: |
+          # An unset secret arrives as "", which electron-builder reads as a certificate path. Drop the empty ones.
+          for v in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            [ -n "${!v}" ] || unset "$v"
+          done
+          npx electron-builder ${{ matrix.targets }} --publish always
 
   publish:
     needs: build
