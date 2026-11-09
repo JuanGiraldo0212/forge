@@ -4,7 +4,7 @@
  */
 import { isMap, parse, parseDocument, type Document } from 'yaml';
 import { err, ok, type Result } from '../domain/result.ts';
-import { applyLocal, parseConfig } from './config.ts';
+import { applyLocal, GITLAB_AUTH_MODES, parseConfig, type GitlabAuth } from './config.ts';
 
 export type CheckEdit = { readonly name: string; readonly run: string };
 
@@ -145,4 +145,41 @@ export const applyRepoEdits = (
   if (!merged.ok) return merged;
   const valid = parseConfig(merged.value);
   return valid.ok ? ok({ config: configOut, local: localOut }) : err(valid.error);
+};
+
+const authOf = (text: string | undefined): GitlabAuth | undefined => {
+  const auth = asRecord(asRecord(text ? parse(text) : {}).gitlab).auth;
+  return GITLAB_AUTH_MODES.find((mode) => mode === auth);
+};
+
+/** How forge signs in to GitLab on this machine: the team's choice in config.yaml, or this machine's in local.yaml. */
+export type GitlabAuthSetting = { readonly auth: GitlabAuth; readonly shared: GitlabAuth };
+
+export const readGitlabAuth = (configText: string | undefined, localText: string | undefined): GitlabAuthSetting => {
+  const shared = authOf(configText) ?? 'token';
+  return { auth: authOf(localText) ?? shared, shared };
+};
+
+/**
+ * Sets how forge signs in to GitLab for this machine only, in local.yaml. Choosing the team's mode drops the
+ * override, so a later change to the shared config reaches this machine again.
+ */
+export const applyGitlabAuth = (
+  configText: string | undefined,
+  localText: string | undefined,
+  auth: GitlabAuth,
+): Result<EditedFiles, readonly string[]> => {
+  if (configText === undefined) return err(['this workspace has no .forge/config.yaml']);
+  const local = parseDocument(localText ?? '');
+  if (local.errors.length) return err([`.forge/local.yaml: ${local.errors[0]!.message}`]);
+
+  setOrDelete(local, ['gitlab', 'auth'], auth, readGitlabAuth(configText, undefined).shared);
+  if (isEmptyMap(local.getIn(['gitlab']))) del(local, ['gitlab']);
+  const localJs = local.toJS();
+  const localOut = localJs && Object.keys(asRecord(localJs)).length ? local.toString() : '';
+
+  const merged = applyLocal(parse(configText), localOut ? parse(localOut) : undefined);
+  if (!merged.ok) return merged;
+  const valid = parseConfig(merged.value);
+  return valid.ok ? ok({ config: configText, local: localOut }) : err(valid.error);
 };

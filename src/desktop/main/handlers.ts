@@ -6,7 +6,8 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { readConfigFile, readLocalConfigFile, writeConfigFiles } from '../../adapters/fs.ts';
-import { applyRepoEdits, readGitlabBaseUrl, readRepoEdits, type RepoEdit } from '../../application/configEdit.ts';
+import { GITLAB_AUTH_MODES } from '../../application/config.ts';
+import { applyGitlabAuth, applyRepoEdits, readGitlabBaseUrl, readRepoEdits, type RepoEdit } from '../../application/configEdit.ts';
 import { expand, findRepoRoot } from '../../app/compose.ts';
 import { initWorkspaceFiles } from '../../app/init.ts';
 import { inspectFolder, listDirectory, remoteHostOf } from './inspect.ts';
@@ -91,6 +92,8 @@ const ARGS = {
   saveRepos: z.tuple([z.array(repoEdit).max(50), z.string().max(4096).nullable(), z.string().trim().max(2048).nullable().optional()]),
   chooseNewWorkspace: z.tuple([]),
   setGitlabToken: z.tuple([z.string().trim().min(1).max(1000).nullable()]),
+  setGitlabAuth: z.tuple([z.enum(GITLAB_AUTH_MODES)]),
+  gitlabAccess: z.tuple([]),
   openExternal: z.tuple([z.string().max(2048).regex(/^https?:\/\//i, 'only http(s) links')]),
   busy: z.tuple([]),
   listDirectory: z.tuple([z.string().max(4096).nullable()]),
@@ -286,6 +289,19 @@ export const createHandlers = (ctx: HandlerContext) => {
       await ctx.open(sess.info.root);
       return { ok: true, text: token ? 'GitLab token saved in the OS keychain.' : 'GitLab token removed.', tone: 'success' };
     },
+    setGitlabAuth: async (auth) => {
+      const sess = session();
+      if (!sess) return noWorkspace;
+      if (sess.busy().length) return { ok: false, text: 'Agents are running. Change how forge signs in to GitLab when they finish.', tone: 'error' };
+      const root = sess.info.root;
+      const files = applyGitlabAuth(await readConfigFile(root), await readLocalConfigFile(root), auth);
+      if (!files.ok) return { ok: false, text: files.error.join(' · '), tone: 'error' };
+      await writeConfigFiles(root, files.value);
+      const opened = await ctx.open(root);
+      if (opened.error) return { ok: false, text: opened.error, tone: 'error' };
+      return { ok: true, text: auth === 'glab' ? 'Forge now signs in to GitLab with the glab login.' : 'Forge now signs in to GitLab with a token.', tone: 'success' };
+    },
+    gitlabAccess: async () => (await session()?.gitlabAccess()) ?? null,
     openExternal: async (url) => {
       // Only web links (MR URLs). Never file:, javascript: or custom schemes.
       if (/^https?:\/\//i.test(url)) await ctx.openExternal(url);

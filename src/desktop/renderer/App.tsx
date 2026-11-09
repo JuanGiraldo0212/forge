@@ -273,10 +273,17 @@ export const App = () => {
       {dialog?.kind === 'settings' && (
         <SettingsDialog
           workspace={s.workspace}
+          connection={connection}
           onClose={() => dispatch({ type: 'dialog', dialog: undefined })}
           onRepos={() => dispatch({ type: 'dialog', dialog: { kind: 'repos', setupRoot: null } })}
           onToken={async (token) => {
             const o = await api().setGitlabToken(token);
+            dispatch({ type: 'toast', outcome: o });
+            dispatch({ type: 'workspace', workspace: await api().workspace() });
+            await reload();
+          }}
+          onAuth={async (auth) => {
+            const o = await api().setGitlabAuth(auth);
             dispatch({ type: 'toast', outcome: o });
             dispatch({ type: 'workspace', workspace: await api().workspace() });
             await reload();

@@ -148,8 +148,33 @@ npm start -- ~/forge-demo/planning    # builds and opens the app on that workspa
 ```
 
 For your own repos, run `npm start`, choose **Set up a new workspace…**, pick your planning repo (an
-empty git repo is fine), and add your code repos. Export `GITLAB_TOKEN` (api scope) before starting,
-or save it under ⚙ Settings; only forge sees it, never the agents.
+empty git repo is fine), and add your code repos. Then give forge access to GitLab's API, which it uses
+to open and read merge requests, in one of two ways:
+
+- **GitLab token** (the default): export `GITLAB_TOKEN` (api scope) before starting, or save it under
+  ⚙ Settings. Only forge sees it, never the agents.
+- **GitLab CLI login**: sign in with [glab](https://gitlab.com/gitlab-org/cli)
+  (`glab auth login --hostname gitlab.example.com`) on the machine forge runs on, and choose
+  *GitLab CLI (glab) login* under ⚙ Settings. Forge then stores no token.
+
+### GitLab sign-in
+
+`gitlab.auth` picks how forge signs its GitLab API calls: `token` (default) or `glab`. Pushing branches
+uses the machine's own git credentials either way.
+
+```yaml
+# .forge/config.yaml: the team's default. Leave it out to keep the token.
+gitlab:
+  baseUrl: https://gitlab.example.com
+  auth: glab
+```
+
+Each developer can override it in `.forge/local.yaml` (`gitlab: { auth: glab }`), which is what the
+switch under ⚙ Settings writes. In glab mode, forge calls `glab api --hostname <host of gitlab.baseUrl>`
+with the same requests and JSON as the token mode, and sends request bodies on stdin. The settings
+screen checks the login with `glab api user` and shows who is signed in, or the `glab auth login`
+command to run. Forge keeps its own token variable away from glab, so glab uses its login. glab
+needs to be on the PATH that forge sees (the login shell's PATH for the desktop app).
 
 ## Desktop app
 
@@ -172,8 +197,9 @@ npm run package                       # unpacked build in dist-desktop/ (drop --
 - **Renderer locked down:** context isolation, sandbox, no Node integration, a strict CSP in packaged
   builds, no navigation or new windows, and only http(s) links (opened in the browser). Agent-written
   markdown is sanitized (DOMPurify). Every IPC argument is checked against a schema.
-- **GitLab token:** the settings screen stores it encrypted in the OS keychain (Electron safeStorage).
-  If no keychain is available, set the env var instead. Agents never see it.
+- **GitLab sign-in:** the settings screen switches between a token and the glab login (see
+  [GitLab sign-in](#gitlab-sign-in)). It stores a token encrypted in the OS keychain (Electron
+  safeStorage). If no keychain is available, set the env var instead. Agents never see it.
 - **PATH:** when launched from the Dock or a launcher, the app reads PATH from your login shell, so
   git, node and npm resolve.
 - **Packaged builds:** the Agent SDK's native binary is unpacked from the asar archive, and the app
@@ -203,6 +229,10 @@ worktrees and files all stay on the server.
 - **Secrets stay on your machine:** a remembered SSH password and the GitLab token are stored encrypted
   in the local OS keychain. The token is handed to the server process over the connection, never on a
   command line or on disk there.
+- **GitLab CLI login on the server:** with `gitlab.auth: glab`, forge uses the glab login **of the
+  server**, not of your computer. Install glab there and run `glab auth login --hostname <host>` in an
+  SSH session. The settings screen runs its check on the server and says so. In this mode no token
+  leaves your machine.
 - **Claude credentials:** with *Let agents on the server use this machine's Claude credentials*,
   `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` from the app's environment are passed the same way.
   Otherwise agents use whatever Claude login the server has.
@@ -217,10 +247,11 @@ are factories that return them, and the only place they are wired together is `s
 ```
 src/domain/        pure: event-sourced Epic aggregate (epic.ts), change spec parsing/validation and
                    scheduling (changes.ts), requirements and epic spec lint (spec.ts), guards, loop/gate/cost policy. No I/O.
-src/ports/         interfaces: EpicStore, ArtifactStore, RepoContext, AgentRunner, Vcs, CodeHost, CheckRunner
+src/ports/         interfaces: EpicStore, ArtifactStore, RepoContext, AgentRunner, Vcs, CodeHost (+ GitlabAccess), CheckRunner
 src/application/   use cases: stages (requirements, epic spec), changes (draft/approve/drop), build, prompts, renderers
-src/adapters/      fs, git (worktrees), gitlab (REST v4), claudeAgent (Agent SDK), process (checks)
-src/app/           composition root (one Vcs + CodeHost per configured repo) and workspace setup
+src/adapters/      fs, git (worktrees), gitlab (REST v4 with a token), glab (the same calls through the GitLab CLI),
+                   claudeAgent (Agent SDK), process (checks)
+src/app/           composition root (one Vcs + CodeHost per configured repo, token or glab by gitlab.auth) and workspace setup
 src/ui/            the actions behind the app's buttons
 src/desktop/       Electron: main (session, validated IPC handlers, settings, connection), preload, renderer (React)
 src/desktop/remote/ SSH transport, the forge server run on SSH hosts, and the JSON-lines RPC between them
@@ -248,7 +279,12 @@ append events.
 
 Build agents get:
 - Bash inside the Agent SDK sandbox (bubblewrap on Linux). Writes are limited to the worktree,
-  network access to `build.allowedDomains`, and credential directories can't be read.
+  network access to `build.allowedDomains`, and credential directories can't be read. That includes
+  glab's login on every platform (`~/.config/glab-cli`, the macOS and Windows defaults, a snap
+  install, `$XDG_CONFIG_HOME/glab-cli` and `$GLAB_CONFIG_DIR`).
+
+Every agent, planning and review included, also has Read rules that deny those credential paths,
+because the sandbox only binds Bash and the Read, Grep and Glob tools follow permission rules.
 - An environment with secrets removed.
 - No access to git push, commit, remote or config, and no web tools.
 - No MCP servers, plugins or skills from the developer's machine.
@@ -263,7 +299,7 @@ running total, so forge records only what each run added.
 
 ## Verified
 
-- `npm run check`: typecheck plus 64 tests, covering:
+- `npm run check`: typecheck plus 97 tests, covering:
   - the domain rules: lifecycle, change specs, cross-repo dependencies, cost;
   - end-to-end runs with real git and bare remotes:
     - a two-repo epic: per-change approval, a single redraft, a dropped change, a cross-repo
@@ -282,7 +318,11 @@ running total, so forge records only what each run added.
     folder;
   - the desktop view model and IPC handlers: argument validation, one action per epic, link
     filtering, repo save, the remove guard, and new-workspace setup;
-  - keychain-only token storage, and the PATH merge.
+  - keychain-only token storage, and the PATH merge;
+  - GitLab sign-in: the glab adapter against a scripted glab (same JSON body as the REST adapter, on
+    stdin; missing, signed-out, expired and unreachable cases), the `gitlab.auth` default and the
+    `local.yaml` override, composition picking the adapter, and the settings switch locally and
+    through the SSH server.
 - Desktop app, driven in a real Electron window (dev and packaged builds) on the live demo:
   - every view renders;
   - an XSS probe stays inert: no script ran, and the `onerror` and `javascript:` link were stripped;

@@ -2,8 +2,8 @@
  * Modal dialogs: notes and feedback, new epic, send back, owner, settings, and the welcome screen.
  */
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import type { ConnectionInfo, WorkspaceInfo } from '../../shared/api.ts';
-import type { NoteSpec } from '../model.ts';
+import type { ConnectionInfo, GitlabAccess, GitlabAuth, WorkspaceInfo } from '../../shared/api.ts';
+import { coreMachine, gitlabAccessView, type NoteSpec } from '../model.ts';
 import { Button } from './ui.tsx';
 
 export const Modal = ({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) => {
@@ -153,45 +153,105 @@ export const AssignDialog = ({ owner, onSubmit, onClose }: { owner: string; onSu
   );
 };
 
-export const SettingsDialog = ({
-  workspace,
-  onToken,
-  onRepos,
-  onClose,
-}: {
-  workspace: WorkspaceInfo;
-  onToken: (token: string | null) => Promise<void>;
-  onRepos: () => void;
-  onClose: () => void;
-}) => {
+const TokenForm = ({ workspace, onToken }: { workspace: WorkspaceInfo; onToken: (token: string | null) => Promise<void> }) => {
   const [token, setToken] = useState('');
   const save = useSubmit(() => onToken(token.trim()));
   const clear = useSubmit(() => onToken(null));
   return (
+    <>
+      <p className="muted small">
+        Never shown to agents. Status: <strong>{workspace.gitlabTokenSet ? 'set' : 'not set'}</strong> (<code>{workspace.tokenEnv}</code>).
+      </p>
+      {workspace.canStoreToken ? (
+        <form onSubmit={save.submit} className="inline-form">
+          <input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} placeholder="glpat-…" aria-label="GitLab token" />
+          <Button kind="primary" type="submit" disabled={!token.trim() || save.pending}>
+            Save to keychain
+          </Button>
+          {workspace.gitlabTokenSet && (
+            <Button kind="ghost" onClick={() => void clear.submit()}>
+              Remove
+            </Button>
+          )}
+        </form>
+      ) : (
+        <p className="banner banner-info">
+          The OS keychain isn't available, so forge won't store the token. Set <code>{workspace.tokenEnv}</code> in the environment that starts the app.
+        </p>
+      )}
+    </>
+  );
+};
+
+const GlabStatus = ({ connection }: { connection: ConnectionInfo }) => {
+  const [access, setAccess] = useState<GitlabAccess | null | undefined>();
+  const check = useSubmit(async () => {
+    setAccess(undefined);
+    setAccess(await window.forge.gitlabAccess());
+  });
+  useEffect(() => void check.submit(), []);
+  const view = access ? gitlabAccessView(access, connection) : undefined;
+  return (
+    <div className={`banner banner-${view?.tone ?? 'info'} banner-with-action`} role="status">
+      <span>
+        {view?.text ?? `Checking the glab login on ${coreMachine(connection)}…`}
+        {view?.command && (
+          <>
+            {' '}
+            <code>{view.command}</code>
+          </>
+        )}
+      </span>
+      <Button kind="ghost" onClick={() => void check.submit()} disabled={check.pending}>
+        Check again
+      </Button>
+    </div>
+  );
+};
+
+export const SettingsDialog = ({
+  workspace,
+  connection,
+  onToken,
+  onAuth,
+  onRepos,
+  onClose,
+}: {
+  workspace: WorkspaceInfo;
+  connection: ConnectionInfo;
+  onToken: (token: string | null) => Promise<void>;
+  onAuth: (auth: GitlabAuth) => Promise<void>;
+  onRepos: () => void;
+  onClose: () => void;
+}) => {
+  const machine = coreMachine(connection);
+  const [switching, setSwitching] = useState(false);
+  const choose = async (auth: GitlabAuth) => {
+    if (auth === workspace.gitlabAuth || switching) return;
+    setSwitching(true);
+    try {
+      await onAuth(auth);
+    } finally {
+      setSwitching(false);
+    }
+  };
+  return (
     <Modal title="Settings" onClose={onClose}>
       <section className="settings-section">
-        <h3>GitLab token</h3>
+        <h3>GitLab sign-in</h3>
         <p className="muted small">
-          Used only by forge to push branches and open MRs, never shown to agents. Status: <strong>{workspace.gitlabTokenSet ? 'set' : 'not set'}</strong> (
-          <code>{workspace.tokenEnv}</code>).
+          How forge opens and reads merge requests on <code>{workspace.gitlabHost}</code>. Branches are pushed with the git credentials of {machine} either way. Saved for{' '}
+          {machine} only, in <code>.forge/local.yaml</code>.
         </p>
-        {workspace.canStoreToken ? (
-          <form onSubmit={save.submit} className="inline-form">
-            <input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} placeholder="glpat-…" aria-label="GitLab token" />
-            <Button kind="primary" type="submit" disabled={!token.trim() || save.pending}>
-              Save to keychain
-            </Button>
-            {workspace.gitlabTokenSet && (
-              <Button kind="ghost" onClick={() => void clear.submit()}>
-                Remove
-              </Button>
-            )}
-          </form>
-        ) : (
-          <p className="banner banner-info">
-            The OS keychain isn't available, so forge won't store the token. Set <code>{workspace.tokenEnv}</code> in the environment that starts the app.
-          </p>
-        )}
+        <fieldset className="radio-row" aria-label="GitLab sign-in">
+          <label>
+            <input type="radio" name="gitlab-auth" checked={workspace.gitlabAuth === 'token'} disabled={switching} onChange={() => void choose('token')} /> GitLab token
+          </label>
+          <label>
+            <input type="radio" name="gitlab-auth" checked={workspace.gitlabAuth === 'glab'} disabled={switching} onChange={() => void choose('glab')} /> GitLab CLI (glab) login on {machine}
+          </label>
+        </fieldset>
+        {workspace.gitlabAuth === 'glab' ? <GlabStatus connection={connection} /> : <TokenForm workspace={workspace} onToken={onToken} />}
       </section>
       <section className="settings-section">
         <h3>Workspace</h3>

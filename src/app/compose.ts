@@ -8,12 +8,13 @@ import { parse as parseYaml } from 'yaml';
 import { claudeAgentRunner } from '../adapters/claudeAgent.ts';
 import { fsArtifactStore, fsEpicStore, fsRepoContext, readConfigFile, readLocalConfigFile } from '../adapters/fs.ts';
 import { gitVcs } from '../adapters/git.ts';
-import { gitlabCodeHost } from '../adapters/gitlab.ts';
+import { glabAccess, glabCodeHost, glabRunner, type GlabRun } from '../adapters/glab.ts';
+import { gitlabCodeHost, instanceHost, tokenAccess } from '../adapters/gitlab.ts';
 import { exec, shellCheckRunner } from '../adapters/process.ts';
-import { applyLocal, parseConfig } from '../application/config.ts';
+import { applyLocal, parseConfig, type GitlabAuth } from '../application/config.ts';
 import type { Deps, RepoDeps } from '../application/deps.ts';
 import { err, ok, type Result } from '../domain/result.ts';
-import type { Logger } from '../ports/index.ts';
+import type { CodeHost, GitlabAccess, Logger } from '../ports/index.ts';
 
 export type Sinks = {
   readonly log: Logger;
@@ -21,7 +22,15 @@ export type Sinks = {
   readonly onStderr?: (line: string) => void;
 };
 
-export type Composed = { readonly deps: Deps; readonly warnings: readonly string[]; readonly epicsRoot: string };
+export type Composed = {
+  readonly deps: Deps;
+  readonly warnings: readonly string[];
+  readonly epicsRoot: string;
+  /** Checks the workspace's GitLab sign-in on this machine; for the settings screen, never for the use cases. */
+  readonly gitlabAccess: () => Promise<GitlabAccess>;
+};
+
+type GitlabAdapters = { readonly host: (project: string) => CodeHost; readonly access: () => Promise<GitlabAccess> };
 
 export const findRepoRoot = async (cwd: string): Promise<Result<string, string>> => {
   const r = await exec('git', ['rev-parse', '--show-toplevel'], cwd);
@@ -49,6 +58,8 @@ const parseYamlFile = (raw: string | undefined, name: string): Result<unknown, s
 export type ComposeOptions = {
   /** Claude Code binary for the Agent SDK; only needed when the SDK cannot find its own (packaged desktop app). */
   readonly agentExecutable?: string;
+  /** Runs glab for gitlab.auth: glab. Defaults to the glab on PATH. */
+  readonly glab?: GlabRun;
 };
 
 export const composeDeps = async (root: string, sinks: Sinks, options: ComposeOptions = {}): Promise<Result<Composed, string>> => {
@@ -65,7 +76,20 @@ export const composeDeps = async (root: string, sinks: Sinks, options: ComposeOp
   const config = parsed.value;
 
   const worktreeBase = config.worktreeRoot ? expand(root, config.worktreeRoot) : join(homedir(), '.forge', 'worktrees', basename(root));
-  const token = process.env[config.gitlab.tokenEnv];
+  const { baseUrl, tokenEnv } = config.gitlab;
+  const token = process.env[tokenEnv];
+  const glab = options.glab ?? glabRunner({ withheldEnv: [tokenEnv] });
+  const gitlabBy: Readonly<Record<GitlabAuth, GitlabAdapters>> = {
+    token: {
+      host: (project) => gitlabCodeHost({ baseUrl, project, token }),
+      access: async () => tokenAccess({ host: instanceHost(baseUrl), tokenEnv, token }),
+    },
+    glab: {
+      host: (project) => glabCodeHost({ baseUrl, project, run: glab }),
+      access: () => glabAccess({ baseUrl, run: glab }),
+    },
+  };
+  const gitlab = gitlabBy[config.gitlab.auth];
   const warnings: string[] = [];
   const repos: Record<string, RepoDeps> = {};
   for (const [name, repo] of Object.entries(config.repos)) {
@@ -77,7 +101,7 @@ export const composeDeps = async (root: string, sinks: Sinks, options: ComposeOp
       root: path,
       config: repo,
       vcs: gitVcs({ repoRoot: path, worktreeRoot: join(worktreeBase, name), remote: repo.remote, baseBranch: repo.baseBranch }),
-      host: gitlabCodeHost({ baseUrl: config.gitlab.baseUrl, project: repo.project, token }),
+      host: gitlab.host(repo.project),
     };
   }
 
@@ -85,6 +109,7 @@ export const composeDeps = async (root: string, sinks: Sinks, options: ComposeOp
   return ok({
     warnings,
     epicsRoot,
+    gitlabAccess: gitlab.access,
     deps: {
       config,
       actor: await actor(root),
