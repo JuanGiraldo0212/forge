@@ -6,10 +6,10 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { readConfigFile, readLocalConfigFile, writeConfigFiles } from '../../adapters/fs.ts';
-import { applyRepoEdits, readRepoEdits, type RepoEdit } from '../../application/configEdit.ts';
+import { applyRepoEdits, readGitlabBaseUrl, readRepoEdits, type RepoEdit } from '../../application/configEdit.ts';
 import { expand, findRepoRoot } from '../../app/compose.ts';
 import { initWorkspaceFiles } from '../../app/init.ts';
-import { inspectFolder, listDirectory } from './inspect.ts';
+import { inspectFolder, listDirectory, remoteHostOf } from './inspect.ts';
 import { changeDiff } from '../../application/build.ts';
 import { changeIssues } from '../../application/changes.ts';
 import { loadEpic } from '../../application/deps.ts';
@@ -88,7 +88,7 @@ const ARGS = {
   sync: z.tuple([slug]),
   repoSettings: z.tuple([]),
   inspectRepo: z.tuple([z.string().max(4096).nullable(), z.string().max(4096).nullable()]),
-  saveRepos: z.tuple([z.array(repoEdit).max(50), z.string().max(4096).nullable()]),
+  saveRepos: z.tuple([z.array(repoEdit).max(50), z.string().max(4096).nullable(), z.string().trim().max(2048).nullable().optional()]),
   chooseNewWorkspace: z.tuple([]),
   setGitlabToken: z.tuple([z.string().trim().min(1).max(1000).nullable()]),
   openExternal: z.tuple([z.string().max(2048).regex(/^https?:\/\//i, 'only http(s) links')]),
@@ -205,22 +205,27 @@ export const createHandlers = (ctx: HandlerContext) => {
       const sess = session();
       if (!sess) return null;
       const root = sess.info.root;
-      const edits = readRepoEdits(await readConfigFile(root), await readLocalConfigFile(root));
+      const configText = await readConfigFile(root);
+      const edits = readRepoEdits(configText, await readLocalConfigFile(root));
       const epics = await loadAll(sess.deps);
       return {
         root,
-        gitlabBaseUrl: sess.deps.config.gitlab.baseUrl,
-        repos: edits.map((e) => {
-          const resolved = expand(root, e.localPath || e.path);
-          return {
-            ...e,
-            resolved,
-            present: existsSync(join(resolved, '.git')),
-            inUse: epics.flatMap((ep) =>
-              ep.changes.filter((c) => c.spec?.repo === e.name && c.status !== 'merged' && c.status !== 'dropped').map((c) => `${ep.slug}/${c.id}`),
-            ),
-          };
-        }),
+        gitlabBaseUrl: readGitlabBaseUrl(configText),
+        repos: await Promise.all(
+          edits.map(async (e) => {
+            const resolved = expand(root, e.localPath || e.path);
+            const present = existsSync(join(resolved, '.git'));
+            return {
+              ...e,
+              resolved,
+              present,
+              remoteHost: present ? await remoteHostOf(resolved, e.remote) : '',
+              inUse: epics.flatMap((ep) =>
+                ep.changes.filter((c) => c.spec?.repo === e.name && c.status !== 'merged' && c.status !== 'dropped').map((c) => `${ep.slug}/${c.id}`),
+              ),
+            };
+          }),
+        ),
       };
     },
     inspectRepo: async (path, workspaceRoot) => {
@@ -228,9 +233,9 @@ export const createHandlers = (ctx: HandlerContext) => {
       if (!folder) return null;
       const root = workspaceRoot ?? session()?.info.root;
       if (!root) return null;
-      return inspectFolder(folder, root, session()?.deps.config.gitlab.baseUrl ?? 'https://gitlab.com');
+      return inspectFolder(folder, root);
     },
-    saveRepos: async (repos, newWorkspaceRoot) => {
+    saveRepos: async (repos, newWorkspaceRoot, gitlabBaseUrl) => {
       const sess = session();
       const root = newWorkspaceRoot ?? sess?.info.root;
       if (!root) return noWorkspace;
@@ -247,7 +252,7 @@ export const createHandlers = (ctx: HandlerContext) => {
         if (blocked.length) return { ok: false, text: `Can't remove a repo with unfinished changes: ${blocked.join(', ')}. Finish or drop them first.`, tone: 'error' };
       }
 
-      const files = applyRepoEdits(configText, await readLocalConfigFile(root), repos as readonly RepoEdit[]);
+      const files = applyRepoEdits(configText, await readLocalConfigFile(root), repos as readonly RepoEdit[], gitlabBaseUrl ?? undefined);
       if (!files.ok) return { ok: false, text: files.error.join(' · '), tone: 'error' };
       if (creating) await initWorkspaceFiles(root, files.value.config);
       await writeConfigFiles(root, files.value);

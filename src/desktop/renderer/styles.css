@@ -492,6 +492,16 @@ a {
   color: var(--info);
 }
 
+.banner-with-action {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.banner-with-action > span {
+  flex: 1;
+}
+
 /* ---------- epic ---------- */
 
 .epic-header {

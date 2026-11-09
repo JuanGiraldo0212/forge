@@ -14,6 +14,8 @@ export type RepoEditView = RepoEdit & {
   /** Where the clone is on this machine (local path, else shared path), absolute. */
   readonly resolved: string;
   readonly present: boolean;
+  /** Host of the clone's git remote ('' when unknown). */
+  readonly remoteHost: string;
   /** Unfinished changes that build in this repo ("epic/C1"); the repo can't be removed while there are any. */
   readonly inUse: readonly string[];
 };
@@ -117,7 +119,8 @@ export type ForgeApi = {
   /** Suggests settings for a folder; with null, asks the user to pick one. `workspaceRoot` is for a workspace being set up. */
   readonly inspectRepo: (path: string | null, workspaceRoot: string | null) => Promise<RepoGuess | null>;
   /** Saves the full repo list. With `newWorkspaceRoot`, creates the workspace there first. */
-  readonly saveRepos: (repos: readonly RepoEdit[], newWorkspaceRoot: string | null) => Promise<Outcome>;
+  /** `gitlabBaseUrl` also sets gitlab.baseUrl; null or left out keeps the config's value. */
+  readonly saveRepos: (repos: readonly RepoEdit[], newWorkspaceRoot: string | null, gitlabBaseUrl?: string | null) => Promise<Outcome>;
   /** Picks a git repo without .forge/config.yaml to set up as a workspace. */
   readonly chooseNewWorkspace: () => Promise<{ readonly root: string | null; readonly error?: string }>;
 

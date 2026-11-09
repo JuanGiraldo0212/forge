@@ -107,7 +107,9 @@ repo chips (also in ⚙ Settings). You can add, edit and remove repos there. Pic
 - the base branch;
 - setup and check commands, from `package.json`/lockfiles, `go.mod`, `Cargo.toml` and similar.
 
-It also warns when the remote isn't on your GitLab host. Shared values are saved to
+Set **GitLab URL** at the top for a self-hosted instance (e.g. `https://gitlab.example.com`; saved as
+`gitlab.baseUrl`, default `https://gitlab.com`). A repo whose remote is on another host gets a
+warning with a button to switch the URL to that host. Shared values are saved to
 `.forge/config.yaml`, keeping your comments, and per-machine paths to `.forge/local.yaml`. A repo
 can't be removed while unfinished changes still build in it.
 

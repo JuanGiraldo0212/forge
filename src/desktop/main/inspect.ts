@@ -18,6 +18,8 @@ export type RepoGuess = {
   readonly project: string;
   readonly baseBranch: string;
   readonly remote: string;
+  /** Host of the git remote's URL ('' when there is none); the dialog compares it with the GitLab URL. */
+  readonly remoteHost: string;
   readonly setup: readonly string[];
   readonly checks: readonly CheckEdit[];
   readonly warnings: readonly string[];
@@ -76,7 +78,7 @@ const detectCommands = async (root: string): Promise<Detected> => {
   return other ? { setup: other.setup, checks: [{ name: 'test', run: other.test }] } : { setup: [], checks: [] };
 };
 
-export const inspectFolder = async (folder: string, workspaceRoot: string, gitlabBaseUrl: string): Promise<RepoGuess> => {
+export const inspectFolder = async (folder: string, workspaceRoot: string): Promise<RepoGuess> => {
   const top = await exec('git', ['rev-parse', '--show-toplevel'], folder);
   const root = top.code === 0 ? top.stdout.trim() : folder;
   const isGit = top.code === 0;
@@ -86,16 +88,7 @@ export const inspectFolder = async (folder: string, workspaceRoot: string, gitla
   const remoteName = isGit ? ((await exec('git', ['remote'], root)).stdout.split('\n').map((r) => r.trim()).filter(Boolean)[0] ?? 'origin') : 'origin';
   const url = isGit ? (await exec('git', ['remote', 'get-url', remoteName], root)).stdout.trim() : '';
   const parsed = url ? parseRemote(url) : undefined;
-  const gitlabHost = (() => {
-    try {
-      return new URL(gitlabBaseUrl).hostname;
-    } catch {
-      return '';
-    }
-  })();
   if (isGit && !url) warnings.push(`No git remote found. Add one (git remote add origin …) so forge can push branches.`);
-  if (parsed && gitlabHost && parsed.host !== gitlabHost)
-    warnings.push(`The remote is on ${parsed.host}, but forge opens merge requests on ${gitlabHost} (gitlab.baseUrl). MRs will fail for this repo until that matches.`);
 
   const head = isGit ? (await exec('git', ['symbolic-ref', '--short', `refs/remotes/${remoteName}/HEAD`], root)).stdout.trim() : '';
   const baseBranch = head ? head.replace(`${remoteName}/`, '') : (await exec('git', ['rev-parse', '--verify', '--quiet', `refs/remotes/${remoteName}/main`], root)).code === 0 ? 'main' : 'master';
@@ -112,10 +105,17 @@ export const inspectFolder = async (folder: string, workspaceRoot: string, gitla
     project: parsed?.project ?? '',
     baseBranch,
     remote: remoteName,
+    remoteHost: parsed?.host ?? '',
     setup,
     checks,
     warnings,
   };
+};
+
+/** Host of a clone's remote ('' when it isn't a clone or has no such remote). */
+export const remoteHostOf = async (root: string, remote: string): Promise<string> => {
+  const r = await exec('git', ['remote', 'get-url', remote], root);
+  return r.code === 0 ? (parseRemote(r.stdout)?.host ?? '') : '';
 };
 
 export type DirEntry = { readonly name: string; readonly path: string; readonly git: boolean; readonly forge: boolean };

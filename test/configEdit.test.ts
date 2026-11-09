@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { parse } from 'yaml';
-import { applyRepoEdits, readRepoEdits, type RepoEdit } from '../src/application/configEdit.ts';
+import { applyRepoEdits, readGitlabBaseUrl, readRepoEdits, type RepoEdit } from '../src/application/configEdit.ts';
 
 const CONFIG = `# Team config. Keep this comment.
 epicsDir: epics
@@ -44,6 +44,33 @@ describe('repo config editing', () => {
     assert.deepEqual(parsed.repos.web.setup, ['npm ci']);
     assert.equal(parsed.repos.web.revertTest.check, 'unit');
     assert.equal(r.value.local, '');
+  });
+
+  it('sets the GitLab URL, and leaves it out of the file when it is the default', () => {
+    assert.equal(readGitlabBaseUrl(CONFIG), 'https://gitlab.com');
+    const set = applyRepoEdits(CONFIG, undefined, [api], ' https://gitlab.example.com/ ');
+    assert.ok(set.ok, JSON.stringify(set));
+    assert.equal(parse(set.value.config).gitlab.baseUrl, 'https://gitlab.example.com');
+    assert.equal(readGitlabBaseUrl(set.value.config), 'https://gitlab.example.com');
+    assert.match(set.value.config, /# Team config\. Keep this comment\./);
+
+    const withToken = applyRepoEdits(`${CONFIG}gitlab:\n  tokenEnv: MY_TOKEN\n  baseUrl: https://gitlab.example.com\n`, undefined, [api]);
+    assert.ok(withToken.ok, JSON.stringify(withToken));
+    const back = applyRepoEdits(withToken.value.config, undefined, [api], 'https://gitlab.com');
+    assert.ok(back.ok, JSON.stringify(back));
+    assert.deepEqual(parse(back.value.config).gitlab, { tokenEnv: 'MY_TOKEN' });
+
+    const cleared = applyRepoEdits(set.value.config, undefined, [api], '');
+    assert.ok(cleared.ok);
+    assert.equal(parse(cleared.value.config).gitlab, undefined, 'an empty gitlab section is removed');
+
+    const kept = applyRepoEdits(set.value.config, undefined, [api]);
+    assert.ok(kept.ok);
+    assert.equal(parse(kept.value.config).gitlab.baseUrl, 'https://gitlab.example.com', 'left alone when not given');
+
+    const bad = applyRepoEdits(CONFIG, undefined, [api], 'gitlab.example.com');
+    assert.ok(!bad.ok);
+    assert.match(bad.error.join(), /must start with https:\/\//);
   });
 
   it('puts machine-only paths in local.yaml and removes repos from both files', () => {

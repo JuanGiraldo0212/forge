@@ -71,14 +71,24 @@ repos: {}
 
 export type EditedFiles = { readonly config: string; readonly local: string };
 
+const DEFAULT_GITLAB_URL = 'https://gitlab.com';
+
+/** The GitLab instance's URL (gitlab.baseUrl) as the shared config sets it, else forge's default. */
+export const readGitlabBaseUrl = (configText: string | undefined): string => {
+  const url = asRecord(asRecord(configText ? parse(configText) : {}).gitlab).baseUrl;
+  return typeof url === 'string' && url.trim() ? url.trim() : DEFAULT_GITLAB_URL;
+};
+
 /**
  * Applies the full list of repos (adds, edits, removals) to both files and validates the result the
  * same way forge does on startup. Nothing is returned unless the merged config is valid.
+ * With `gitlabBaseUrl`, also sets the GitLab instance (left out of the file when it's the default).
  */
 export const applyRepoEdits = (
   configText: string | undefined,
   localText: string | undefined,
   edits: readonly RepoEdit[],
+  gitlabBaseUrl?: string,
 ): Result<EditedFiles, readonly string[]> => {
   const names = edits.map((e) => e.name);
   const dupes = names.filter((n, i) => names.indexOf(n) !== i);
@@ -119,6 +129,13 @@ export const applyRepoEdits = (
     else del(local, ['repos', e.name]);
   }
   if (isEmptyMap(local.getIn(['repos']))) del(local, ['repos']);
+
+  if (gitlabBaseUrl !== undefined) {
+    const url = gitlabBaseUrl.trim().replace(/\/+$/, '');
+    if (url && !/^https?:\/\//i.test(url)) return err([`GitLab URL must start with https:// or http:// (got "${url}")`]);
+    setOrDelete(config, ['gitlab', 'baseUrl'], url || undefined, DEFAULT_GITLAB_URL);
+    if (isEmptyMap(config.getIn(['gitlab']))) del(config, ['gitlab']);
+  }
 
   const configOut = config.toString();
   const localJs = local.toJS();
