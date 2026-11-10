@@ -3,6 +3,7 @@
  * to show the user. No rendering, no front-end state.
  */
 import { syncMergeRequests } from '../application/build.ts';
+import { sendChat } from '../application/chat.ts';
 import { approveAllDrafts, approveChange, approveChangeSet, dropChange, reviseChange, revisePlan, runChanges, runDevelopment } from '../application/changes.ts';
 import { loadEpic, type Deps } from '../application/deps.ts';
 import { abandon, answerQuestions, approveStage, assignOwner, createEpic, reviseStage, runGatedStage, runnable, sendBack } from '../application/stages.ts';
@@ -122,6 +123,24 @@ export const answerAction = async (
   if (!r.ok) return failed(r.error.message);
   if (r.value.remaining.length) return done(`Answered. Still open: ${r.value.remaining.join(', ')}.`, 'info');
   return continueRun ? runAction(deps, slug, false) : done('Answered. Run the agent to continue.', 'success');
+};
+
+/**
+ * Sends a chat message to a thread's agent. `rerun` is set when the agent queued the message as feedback:
+ * the caller then reruns the work (see runAction) so the change happens right away.
+ */
+export const chatAction = async (
+  deps: Deps,
+  slug: string,
+  thread: string,
+  text: string,
+  blocked?: string,
+): Promise<{ readonly outcome: Outcome; readonly rerun: boolean }> => {
+  const r = await sendChat(deps, slug, thread, text, { blocked });
+  if (!r.ok) return { outcome: failed(r.error.message), rerun: false };
+  return r.value.queued
+    ? { outcome: done(`Queued as feedback: forge ${r.value.queued}.`, 'info'), rerun: true }
+    : { outcome: { ok: true, text: '', tone: 'success' }, rerun: false };
 };
 
 export const sendBackAction = async (deps: Deps, slug: string, to: string, note: string): Promise<Outcome> =>

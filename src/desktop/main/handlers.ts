@@ -20,6 +20,7 @@ import {
   abandonAction,
   answerAction,
   approveAction,
+  chatAction,
   approveAllAction,
   assignAction,
   createEpicAction,
@@ -81,6 +82,7 @@ const ARGS = {
   approveAll: z.tuple([slug, text]),
   revise: z.tuple([slug, changeId.nullable(), text.min(1)]),
   answer: z.tuple([slug, z.array(z.object({ questionId: z.string().regex(/^Q\d{1,4}$/), text: text.min(1) })).min(1).max(20)]),
+  chat: z.tuple([slug, z.union([z.enum(['requirements', 'spec', 'changes']), changeId]), text.trim().min(1)]),
   sendBack: z.tuple([slug, z.enum(['requirements', 'spec']), text.min(1)]),
   drop: z.tuple([slug, changeId, text.min(1)]),
   assign: z.tuple([slug, z.string().trim().min(1).max(200)]),
@@ -195,6 +197,21 @@ export const createHandlers = (ctx: HandlerContext) => {
     revise: (s, id, note) => exclusive(s, (d) => reviseAction(d, s, id ?? undefined, note)),
     // Answering resumes the agent, so it runs exclusively (and shows as busy) like a run.
     answer: (s, answers) => exclusive(s, (d) => answerAction(d, s, answers)),
+    chat: async (s, thread, message) => {
+      const sess = session();
+      if (!sess) return noWorkspace;
+      // While agents work on the epic, the chat still answers; it just can't queue changes.
+      if (sess.busy().includes(s))
+        return (await chatAction(sess.deps, s, thread, message, 'agents are working on this epic; ask again once they finish')).outcome;
+      // Otherwise hold the epic for the reply and any rerun it queued, but answer as soon as the reply is in.
+      return new Promise<Outcome>((resolve) => {
+        void exclusive(s, async (d) => {
+          const { outcome, rerun } = await chatAction(d, s, thread, message);
+          resolve(outcome);
+          return rerun ? runAction(d, s, false) : outcome;
+        }).then(resolve);
+      });
+    },
     sendBack: (s, to, note) => exclusive(s, (d) => sendBackAction(d, s, to, note)),
     drop: (s, id, note) => exclusive(s, (d) => dropAction(d, s, id, note)),
     assign: (s, owner) => exclusive(s, (d) => assignAction(d, s, owner)),

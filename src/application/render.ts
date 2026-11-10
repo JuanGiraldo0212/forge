@@ -36,6 +36,10 @@ export const findingComment = (f: Finding, commit: string): string =>
 
 export const cleanReviewComment = (commit: string): string => `Forge automated review of ${commit.slice(0, 8)}: no findings.`;
 
+/** How a chat thread is named to people. */
+export const chatLabel = (thread: string): string =>
+  thread === 'requirements' ? 'requirements' : thread === 'spec' ? 'epic spec' : thread === 'changes' ? 'change set' : thread;
+
 export const describeEvent = (e: EpicEvent): string => {
   switch (e.type) {
     case 'EpicCreated':
@@ -90,5 +94,10 @@ export const describeEvent = (e: EpicEvent): string => {
       return `${e.changeId} merged`;
     case 'EpicAbandoned':
       return `abandoned: ${e.note}`;
+    case 'ChatMessage': {
+      const who = e.role === 'agent' ? `${chatLabel(e.thread)} agent` : e.role === 'forge' ? 'forge' : 'asked';
+      const text = e.text.length > 160 ? `${e.text.slice(0, 160)}…` : e.text;
+      return `chat (${chatLabel(e.thread)}) ${who}: ${text}${e.feedback ? ' [queued as feedback]' : ''}`;
+    }
   }
 };

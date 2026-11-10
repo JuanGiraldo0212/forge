@@ -30,7 +30,7 @@ const interceptLinks = (onOpenUrl: (url: string) => void) => (e: MouseEvent<HTML
   if (/^https?:\/\//i.test(a.href)) onOpenUrl(a.href);
 };
 
-const Markdown = ({ md, onOpenUrl }: { md: string; onOpenUrl: (url: string) => void }) => (
+export const Markdown = ({ md, onOpenUrl }: { md: string; onOpenUrl: (url: string) => void }) => (
   <article className="markdown" onClick={interceptLinks(onOpenUrl)} dangerouslySetInnerHTML={{ __html: renderMarkdown(md) }} />
 );
 

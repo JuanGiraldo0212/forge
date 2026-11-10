@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { AGENT_DECIDES, answerText, choiceFromInput, replay, type EpicEvent, type Question } from '../src/domain/epic.ts';
+import { ChatPanel } from '../src/desktop/renderer/components/ChatPanel.tsx';
 import { QuestionsPanel } from '../src/desktop/renderer/components/QuestionsPanel.tsx';
 
 const q: Question = {
@@ -56,5 +57,35 @@ describe('questions panel', () => {
     assert.match(html, /Something else/);
     assert.match(html, /Let the agent decide/);
     assert.match(html, /Ordering.*Editing/s, 'step bar uses the headers');
+  });
+});
+
+describe('chat panel', () => {
+  const at = '2026-11-05T10:00:00.000Z';
+  const events = [
+    { type: 'EpicCreated', slug: 'x', title: 'X', owner: 'me@example.com', at, by: 'me@example.com' },
+    { type: 'ChatMessage', thread: 'requirements', role: 'human', text: 'Add filters', at, by: 'me@example.com' },
+    { type: 'ChatMessage', thread: 'requirements', role: 'forge', text: 'Not queued: the epic is done.', at, by: 'forge' },
+  ] as unknown as EpicEvent[];
+  const epic = replay(events)!;
+  const render = (threads: readonly string[]) =>
+    renderToStaticMarkup(
+      <ChatPanel epic={epic} threads={threads} actor="me@example.com" busy={false} onSend={async () => ({ ok: true, text: '', tone: 'success' })} onOpenUrl={() => {}} onCollapse={() => {}} />,
+    );
+
+  // Agent replies are sanitized markdown, which needs a DOM; these render without one.
+  it('shows the thread with who said what, and the notes from forge', () => {
+    const html = render(['requirements']);
+    assert.match(html, /Requirements agent/);
+    assert.match(html, /You<\/span>[\s\S]*Add filters/);
+    assert.match(html, /class="chat-note">Not queued: the epic is done\./);
+    assert.equal(epic.chats.requirements!.length, 2);
+  });
+
+  it('offers a thread switcher when a change and the change set both have a chat', () => {
+    const html = render(['C1', 'changes']);
+    assert.match(html, /role="tab" aria-selected="true"[^>]*>C1</);
+    assert.match(html, />Change set</);
+    assert.match(html, /Ask the c1 agent anything/i, 'an empty thread explains what the chat does');
   });
 });
