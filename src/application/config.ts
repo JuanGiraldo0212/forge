@@ -77,7 +77,13 @@ export const ConfigSchema = z.object({
       allowedDomains: z.array(z.string()).default([]),
     })
     .prefault({}),
-  review: z.object({ gate: z.enum(['always', 'risk-based']).default('always') }).prefault({}),
+  review: z
+    .object({
+      gate: z.enum(['always', 'risk-based']).default('always'),
+      /** Post the automated review's findings on the MR as comments, inline on the diff where possible. */
+      postToMergeRequest: z.boolean().default(true),
+    })
+    .prefault({}),
   gitlab: z
     .object({
       baseUrl: z.string().url().default('https://gitlab.com'),

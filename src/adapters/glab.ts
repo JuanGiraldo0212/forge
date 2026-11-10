@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { err, ok, type Result } from '../domain/result.ts';
 import type { CodeHost, GitlabAccess, PortError } from '../ports/index.ts';
-import { instanceHost, mergeRequestBody, projectPath, toMergeRequestState, toOpenedMergeRequest } from './gitlab.ts';
+import { commentOnMergeRequest, instanceHost, mergeRequestBody, projectPath, toMergeRequestState, toOpenedMergeRequest, type DiffWait, type ProjectRequest } from './gitlab.ts';
 
 export type GlabResult =
   | { readonly kind: 'missing' }
@@ -100,11 +100,11 @@ const apiArgs = (host: string, method: string, endpoint: string, withBody: boole
   endpoint,
 ];
 
-export const glabCodeHost = (opts: { readonly baseUrl: string; readonly project: string; readonly run: GlabRun }): CodeHost => {
+export const glabCodeHost = (opts: { readonly baseUrl: string; readonly project: string; readonly run: GlabRun; readonly diffWait?: DiffWait }): CodeHost => {
   const host = instanceHost(opts.baseUrl);
   const project = projectPath(opts.project);
 
-  const request = async (method: string, path: string, body?: unknown): Promise<Result<any, PortError>> => {
+  const request: ProjectRequest = async (method, path, body) => {
     const result = await opts.run(apiArgs(host, method, `${project}${path}`, body !== undefined), {
       stdin: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -124,6 +124,8 @@ export const glabCodeHost = (opts: { readonly baseUrl: string; readonly project:
       const r = await request('GET', `/merge_requests/${iid}`);
       return r.ok ? ok(toMergeRequestState(r.value)) : r;
     },
+
+    commentOnMergeRequest: (iid, headSha, comments) => commentOnMergeRequest(request, iid, headSha, comments, opts.diffWait),
   };
 };
 

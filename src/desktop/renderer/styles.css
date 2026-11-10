@@ -654,6 +654,18 @@ a {
   grid-template-columns: 300px 1fr;
 }
 
+.epic-body {
+  position: relative;
+}
+
+.epic-body.with-chat {
+  grid-template-columns: 1fr minmax(300px, 380px);
+}
+
+.epic-body.with-changes.with-chat {
+  grid-template-columns: 260px 1fr minmax(300px, 380px);
+}
+
 .change-list {
   border-right: 1px solid var(--border);
   overflow: auto;
@@ -1608,6 +1620,269 @@ a {
   flex: 1;
   font-family: var(--mono);
   font-size: 12px;
+}
+
+/* ---------- chat ---------- */
+
+.chat-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.chat-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.chat-threads {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.chat-thread {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.chat-thread.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.chat-list {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chat-empty {
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 8px 4px;
+}
+
+.chat-empty p {
+  margin: 0 0 8px;
+}
+
+.chat-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.chat-msg-human {
+  align-items: flex-end;
+}
+
+.chat-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.chat-agent-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--info);
+}
+
+.chat-bubble {
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.chat-msg-human .chat-bubble {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.chat-msg-agent .chat-bubble {
+  background: var(--panel-2);
+}
+
+.chat-bubble .markdown {
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: none;
+}
+
+.chat-bubble .markdown > :first-child {
+  margin-top: 0;
+}
+
+.chat-bubble .markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.chat-bubble .markdown pre {
+  overflow-x: auto;
+}
+
+.chat-plain {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.chat-feedback {
+  font-size: 12px;
+  border: 1px solid var(--info);
+  background: var(--info-soft);
+  color: var(--info);
+  border-radius: 6px;
+  padding: 4px 8px;
+  max-width: 100%;
+}
+
+.chat-feedback summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.chat-feedback p {
+  margin: 6px 0 2px;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.chat-note {
+  align-self: center;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+  max-width: 90%;
+}
+
+.chat-typing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.chat-compose {
+  border-top: 1px solid var(--border);
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-compose textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 60px;
+  max-height: 240px;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.chat-compose textarea:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.chat-compose-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.chat-error {
+  font-size: 12px;
+  color: var(--bad);
+  background: var(--bad-soft);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.chat-hint {
+  font-size: 12px;
+}
+
+.chat-reopen {
+  position: absolute;
+  right: 0;
+  top: 12px;
+  writing-mode: vertical-rl;
+  border: 1px solid var(--border);
+  border-right: 0;
+  border-radius: 6px 0 0 6px;
+  background: var(--panel);
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 10px 4px;
+  cursor: pointer;
+}
+
+@media (max-width: 1400px) {
+  .epic-body.with-changes.with-chat {
+    grid-template-columns: 220px 1fr minmax(280px, 340px);
+  }
+}
+
+/* Narrow windows: the chat floats over the documents instead of squeezing them. */
+@media (max-width: 1150px) {
+  .epic-body.with-chat {
+    grid-template-columns: 1fr;
+  }
+
+  .epic-body.with-changes.with-chat {
+    grid-template-columns: 220px 1fr;
+  }
+
+  .chat-panel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(360px, 90%);
+    z-index: 5;
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.18);
+  }
 }
 
 /* ---------- app updates ---------- */

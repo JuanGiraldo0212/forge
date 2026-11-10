@@ -3,7 +3,7 @@
  * The request bodies and response decoding are shared with the glab adapter, so both send and read the same JSON.
  */
 import { err, ok, type Result } from '../domain/result.ts';
-import type { CodeHost, GitlabAccess, MergeRequestState, PortError } from '../ports/index.ts';
+import type { CodeHost, GitlabAccess, MergeRequestComment, MergeRequestState, PortError, PostedComments } from '../ports/index.ts';
 
 type Fetch = typeof fetch;
 type NewMergeRequest = Parameters<CodeHost['openMergeRequest']>[0];
@@ -41,16 +41,72 @@ export const toMergeRequestState = (json: any): MergeRequestState => ({
 export const tokenAccess = (opts: { readonly host: string; readonly tokenEnv: string; readonly token: string | undefined }): GitlabAccess =>
   opts.token ? { kind: 'ready', host: opts.host } : { kind: 'no_token', host: opts.host, tokenEnv: opts.tokenEnv };
 
+/** One project-relative REST call (e.g. "GET", "/merge_requests/7"), however the adapter signs it. */
+export type ProjectRequest = (method: string, path: string, body?: unknown) => Promise<Result<any, PortError>>;
+
+/** GitLab computes an MR's diff asynchronously after a push; how long to wait for it. */
+export type DiffWait = { readonly attempts: number; readonly delayMs: number };
+export const DIFF_WAIT: DiffWait = { attempts: 10, delayMs: 1000 };
+
+type DiffRefs = { readonly base_sha: string; readonly start_sha: string; readonly head_sha: string };
+
+const location = (c: MergeRequestComment): string => (c.file ? `\`${c.file}${c.line ? `:${c.line}` : ''}\`\n\n` : '');
+
+/**
+ * Posts comments on an MR as of `headSha`: inline discussions on the diff where a comment names a line the diff
+ * has, general notes otherwise (or until GitLab has computed the pushed commit's diff). Shared by both adapters.
+ */
+export const commentOnMergeRequest = async (
+  request: ProjectRequest,
+  iid: number,
+  headSha: string,
+  comments: readonly MergeRequestComment[],
+  wait: DiffWait = DIFF_WAIT,
+): Promise<PostedComments> => {
+  const diffRefs = async (): Promise<DiffRefs | undefined> => {
+    for (let i = 0; i < wait.attempts; i++) {
+      const r = await request('GET', `/merge_requests/${iid}`);
+      const refs = r.ok ? (r.value?.diff_refs as DiffRefs | null | undefined) : undefined;
+      if (refs?.head_sha === headSha) return refs;
+      if (i < wait.attempts - 1) await new Promise((res) => setTimeout(res, wait.delayMs));
+    }
+    return undefined;
+  };
+  const refs = comments.some((c) => c.file && c.line) ? await diffRefs() : undefined;
+
+  let inline = 0;
+  let general = 0;
+  const failed: string[] = [];
+  for (const c of comments) {
+    if (refs && c.file && c.line) {
+      const r = await request('POST', `/merge_requests/${iid}/discussions`, {
+        body: c.body,
+        position: { position_type: 'text', ...refs, old_path: c.file, new_path: c.file, new_line: c.line },
+      });
+      if (r.ok) {
+        inline++;
+        continue;
+      }
+      // Usually the line is not part of the diff. The comment still belongs on the MR.
+    }
+    const r = await request('POST', `/merge_requests/${iid}/notes`, { body: `${location(c)}${c.body}` });
+    if (r.ok) general++;
+    else failed.push(r.error.message);
+  }
+  return { inline, general, failed };
+};
+
 export const gitlabCodeHost = (opts: {
   readonly baseUrl: string;
   readonly project: string;
   readonly token: string | undefined;
   readonly fetch?: Fetch;
+  readonly diffWait?: DiffWait;
 }): CodeHost => {
   const doFetch = opts.fetch ?? fetch;
   const api = `${opts.baseUrl.replace(/\/$/, '')}/api/v4/${projectPath(opts.project)}`;
 
-  const request = async (method: string, path: string, body?: unknown): Promise<Result<any, PortError>> => {
+  const request: ProjectRequest = async (method, path, body) => {
     if (!opts.token) return fail('GitLab token is not set (see gitlab.tokenEnv in .forge/config.yaml)');
     try {
       const res = await doFetch(`${api}${path}`, {
@@ -76,5 +132,7 @@ export const gitlabCodeHost = (opts: {
       const r = await request('GET', `/merge_requests/${iid}`);
       return r.ok ? ok(toMergeRequestState(r.value)) : r;
     },
+
+    commentOnMergeRequest: (iid, headSha, comments) => commentOnMergeRequest(request, iid, headSha, comments, opts.diffWait),
   };
 };

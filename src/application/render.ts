@@ -30,6 +30,16 @@ ${change.findings.length ? change.findings.map(findingLine).join('\n') : 'No fin
 Opened by Forge after human approval. Merging is a human decision.
 `;
 
+/** One review finding as an MR comment. Where it points goes in the comment's position, not its text. */
+export const findingComment = (f: Finding, commit: string): string =>
+  `**${f.severity === 'blocking' ? 'Blocking' : 'Advisory'}**: ${f.summary}${f.detail ? `\n\n${f.detail}` : ''}\n\n<sub>Forge automated review of ${commit.slice(0, 8)}</sub>`;
+
+export const cleanReviewComment = (commit: string): string => `Forge automated review of ${commit.slice(0, 8)}: no findings.`;
+
+/** How a chat thread is named to people. */
+export const chatLabel = (thread: string): string =>
+  thread === 'requirements' ? 'requirements' : thread === 'spec' ? 'epic spec' : thread === 'changes' ? 'change set' : thread;
+
 export const describeEvent = (e: EpicEvent): string => {
   switch (e.type) {
     case 'EpicCreated':
@@ -78,9 +88,16 @@ export const describeEvent = (e: EpicEvent): string => {
       return `asked to rework ${e.changeId}: ${e.note}`;
     case 'MergeRequestOpened':
       return `${e.changeId} MR !${e.iid} ${e.url}`;
+    case 'ReviewCommentsPosted':
+      return `${e.changeId} review posted to MR !${e.iid} (${e.inline} inline, ${e.general} general)`;
     case 'ChangeMerged':
       return `${e.changeId} merged`;
     case 'EpicAbandoned':
       return `abandoned: ${e.note}`;
+    case 'ChatMessage': {
+      const who = e.role === 'agent' ? `${chatLabel(e.thread)} agent` : e.role === 'forge' ? 'forge' : 'asked';
+      const text = e.text.length > 160 ? `${e.text.slice(0, 160)}…` : e.text;
+      return `chat (${chatLabel(e.thread)}) ${who}: ${text}${e.feedback ? ' [queued as feedback]' : ''}`;
+    }
   }
 };

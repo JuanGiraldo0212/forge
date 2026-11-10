@@ -135,6 +135,25 @@ export type ChangeState = {
   readonly commit?: string;
   readonly revertTest?: 'passed' | 'skipped';
   readonly mergeRequest?: MergeRequestRef;
+  /** The latest review's findings are on the MR as comments. Reset by every new review. */
+  readonly reviewPosted?: boolean;
+};
+
+/**
+ * A chat thread: one per agent the human can talk to. The single-document stages and the change set are
+ * named by their stage; each change by its id.
+ */
+export type ChatThread = 'requirements' | 'spec' | 'changes' | (string & {});
+
+export type ChatRole = 'human' | 'agent' | 'forge';
+
+export type ChatEntry = {
+  readonly role: ChatRole;
+  readonly text: string;
+  readonly at: string;
+  readonly by: string;
+  /** For an agent reply that asked for a change: the instruction handed to the agent that revises the work. */
+  readonly feedback?: string;
 };
 
 export type Note = {
@@ -166,6 +185,8 @@ export type Epic = {
   readonly pastDialogs: Partial<Record<GatedStage, StageDialog>>;
   readonly lastError?: string;
   readonly costUsd: number;
+  /** Chat threads with the epic's agents, by thread. */
+  readonly chats: Readonly<Record<string, readonly ChatEntry[]>>;
 };
 
 type Cost = { readonly costUsd: number };
@@ -253,8 +274,17 @@ type EventBody =
   | ({ readonly type: 'ChangeApproved'; readonly note?: string } & ChangeRef)
   | ({ readonly type: 'ChangeReworkRequested'; readonly note: string } & ChangeRef)
   | ({ readonly type: 'MergeRequestOpened'; readonly iid: number; readonly url: string } & ChangeRef)
+  | ({ readonly type: 'ReviewCommentsPosted'; readonly iid: number; readonly inline: number; readonly general: number } & ChangeRef)
   | ({ readonly type: 'ChangeMerged' } & ChangeRef)
-  | { readonly type: 'EpicAbandoned'; readonly note: string };
+  | { readonly type: 'EpicAbandoned'; readonly note: string }
+  | {
+      readonly type: 'ChatMessage';
+      readonly thread: ChatThread;
+      readonly role: ChatRole;
+      readonly text: string;
+      readonly feedback?: string;
+      readonly costUsd?: number;
+    };
 
 export type EpicEvent = EventBody & { readonly at: string; readonly by: string };
 export type EpicEventType = EpicEvent['type'];
@@ -480,6 +510,7 @@ const applyEvent = (e: Epic, ev: EpicEvent): Epic => {
       return updateChange(addCost(e, ev.costUsd), ev.changeId, (c) => ({
         ...c,
         findings: ev.findings,
+        reviewPosted: false,
         status: ev.gateRequired ? 'awaiting_review' : 'approved',
       }));
     case 'ChangeApproved': {
@@ -501,9 +532,15 @@ const applyEvent = (e: Epic, ev: EpicEvent): Epic => {
       );
     case 'MergeRequestOpened':
       return updateChange(e, ev.changeId, (c) => ({ ...c, status: 'mr_open', mergeRequest: { iid: ev.iid, url: ev.url } }));
+    case 'ReviewCommentsPosted':
+      return updateChange(e, ev.changeId, (c) => ({ ...c, reviewPosted: true }));
     case 'ChangeMerged': {
       const next = updateChange(e, ev.changeId, (c) => ({ ...c, status: 'merged' }));
       return finished(next.changes) ? { ...next, stage: 'done' } : next;
+    }
+    case 'ChatMessage': {
+      const entry: ChatEntry = { role: ev.role, text: ev.text, ...stamp, ...(ev.feedback ? { feedback: ev.feedback } : {}) };
+      return addCost({ ...e, chats: { ...e.chats, [ev.thread]: [...(e.chats[ev.thread] ?? []), entry] } }, ev.costUsd);
     }
     case 'EpicAbandoned':
       return { ...e, stage: 'abandoned', status: 'ready' };
@@ -528,6 +565,7 @@ export const replay = (events: readonly EpicEvent[]): Epic | undefined => {
     changes: [],
     pastDialogs: {},
     costUsd: 0,
+    chats: {},
   };
   return rest.reduce((e, ev) => ({ ...applyEvent(e, ev), updatedAt: ev.at }), initial);
 };

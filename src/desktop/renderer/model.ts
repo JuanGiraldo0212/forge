@@ -188,6 +188,16 @@ export const currentTab = (s: State): Tab => {
   return s.tab && tabsFor(e, view, change).includes(s.tab) ? s.tab : defaultTab(e, change, view);
 };
 
+/**
+ * Chat threads for what is on screen, the most specific first: the stage's agent, or the selected change's
+ * agent (with the change set as a second thread while change specs are drafted).
+ */
+export const chatThreads = (e: Epic, view: DocStage, change: ChangeState | undefined): readonly string[] => {
+  if (view === 'requirements' || view === 'spec') return [view];
+  if (view === 'changes') return change ? [change.id, 'changes'] : ['changes'];
+  return change ? [change.id] : [];
+};
+
 export type StepState = 'done' | 'current' | 'gate' | 'todo';
 
 export const stepState = (e: Epic, stage: Stage): StepState => {
@@ -221,7 +231,6 @@ export const epicActions = (e: Epic, busy: boolean): readonly ActionSpec[] => {
     if (e.status === 'awaiting_approval')
       return [
         { id: 'approve', label: e.stage === 'requirements' ? 'Approve requirements' : 'Approve epic spec', kind: 'primary', note: note('Approve', 'Note for the next stages (optional)', false, 'Approve') },
-        { id: 'revise', label: 'Request changes…', kind: 'secondary', note: note('Request changes', 'What should change', true, 'Send feedback') },
         ...(e.stage === 'spec' ? [back] : []),
         abandon,
       ];
@@ -241,7 +250,6 @@ export const epicActions = (e: Epic, busy: boolean): readonly ActionSpec[] => {
         : []),
       ...(runnable ? [{ id: 'run' as const, label: e.changes.length === 0 ? 'Draft change specs' : 'Redraft', kind: complete ? ('secondary' as const) : ('primary' as const) }] : []),
       ...(drafts > 1 ? [{ id: 'approve-all' as const, label: `Approve all ${drafts} drafts`, kind: 'secondary' as const, note: note('Approve all drafts', 'Note (optional)', false, 'Approve all') }] : []),
-      ...(e.changes.length ? [{ id: 'revise' as const, label: 'Feedback on all changes…', kind: 'secondary' as const, note: note('Feedback on the change set', 'Unapproved change specs are redrafted with this', true, 'Send feedback') }] : []),
       back,
       abandon,
     ];
@@ -265,24 +273,16 @@ export const changeActions = (c: ChangeState, busy: boolean): readonly ActionSpe
     case 'draft':
       return [
         { id: 'approve', label: 'Approve change spec', kind: 'primary', changeId: id, note: note(`Approve ${id}`, 'Note (optional)', false, 'Approve') },
-        { id: 'revise', label: 'Request changes…', kind: 'secondary', changeId: id, note: note(`Redraft ${id}`, 'What should change in this change spec', true, 'Send feedback') },
         drop,
       ];
     case 'awaiting_review':
       return [
         { id: 'approve', label: 'Approve code & open MR', kind: 'primary', changeId: id, note: note(`Approve ${id}'s code`, 'Note (optional)', false, 'Approve and open MR') },
-        { id: 'revise', label: 'Request rework…', kind: 'secondary', changeId: id, note: note(`Rework ${id}`, 'What should change in the code', true, 'Send feedback') },
       ];
     case 'escalated':
-      return [
-        { id: 'revise', label: 'Give guidance…', kind: 'primary', changeId: id, note: note(`Guidance for ${id}`, 'What should the agent do differently', true, 'Send guidance') },
-        drop,
-      ];
+      return [drop];
     case 'mr_open':
-      return [
-        { id: 'sync', label: 'Sync MR', kind: 'secondary' },
-        { id: 'revise', label: 'Request rework…', kind: 'secondary', changeId: id, note: note(`Rework ${id}`, 'What should change in the code', true, 'Send feedback') },
-      ];
+      return [{ id: 'sync', label: 'Sync MR', kind: 'secondary' }];
     case 'ready':
     case 'revising':
       return [drop];
@@ -295,7 +295,7 @@ export const changeHint = (c: ChangeState, stage: Stage = 'development'): string
   if (stage === 'changes' && c.status === 'ready') return 'Approved. It builds in development, once every change spec is approved.';
   switch (c.status) {
     case 'draft':
-      return 'Draft. Read it, edit it if needed, then approve it or ask for a redraft.';
+      return 'Draft. Read it, edit it if needed, then approve it, or ask its agent for changes in the chat.';
     case 'revising':
       return 'Feedback queued. It will be redrafted on the next run.';
     case 'ready':
@@ -303,13 +303,13 @@ export const changeHint = (c: ChangeState, stage: Stage = 'development'): string
     case 'running':
       return 'An agent is building this change.';
     case 'escalated':
-      return `Needs your input: ${c.escalation ?? ''}`;
+      return `Needs your input: ${c.escalation ?? ''} Tell its agent what to do differently in the chat.`;
     case 'awaiting_review':
-      return 'Built and reviewed. Check the findings and the diff, then approve the code or ask for rework.';
+      return 'Built and reviewed. Check the findings and the diff, then approve the code, or ask for rework in the chat.';
     case 'approved':
       return 'Code approved. The MR opens on the next run (the last attempt failed).';
     case 'mr_open':
-      return 'MR open. Merge it in GitLab, then sync.';
+      return 'MR open. Merge it in GitLab, then sync. Ask for rework in the chat.';
     case 'merged':
       return 'Merged.';
     case 'dropped':
@@ -327,7 +327,7 @@ export const epicHint = (e: Epic, busy: boolean): string => {
       const n = e.dialog?.questions.filter((q) => !q.answer).length ?? 0;
       return `The ${e.stage === 'requirements' ? 'requirements' : 'epic spec'} agent paused with ${n} question${n === 1 ? '' : 's'} for you. Answer and it carries on.`;
     }
-    if (e.status === 'awaiting_approval') return `Waiting for you: read the ${e.stage === 'requirements' ? 'requirements' : 'epic spec'}, edit it if needed, then approve or request changes.`;
+    if (e.status === 'awaiting_approval') return `Waiting for you: read the ${e.stage === 'requirements' ? 'requirements' : 'epic spec'}, edit it if needed, then approve it, or ask its agent for changes in the chat.`;
     return e.pendingFeedback.length ? 'Your feedback is queued. Run the agent to regenerate.' : `Next: run the ${e.stage === 'requirements' ? 'requirements agent' : 'epic spec agent'}.`;
   }
   if (e.stage === 'changes') {

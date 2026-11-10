@@ -1,7 +1,7 @@
 /**
  * Prompt builders. Pure: every input is passed in, nothing is read here.
  */
-import type { ApprovedChange, AskedQuestion, ChangeState, Epic, Finding, GatedStage } from '../domain/epic.ts';
+import type { ApprovedChange, AskedQuestion, ChangeState, ChatEntry, Epic, Finding, GatedStage } from '../domain/epic.ts';
 import type { CheckResult } from '../ports/index.ts';
 
 export type RepoRef = {
@@ -410,4 +410,54 @@ export const extractJson = (structured: unknown, text: string): unknown => {
   } catch {
     return undefined;
   }
+};
+
+export type ChatInputs = {
+  readonly epic: Epic;
+  /** What the thread is about, e.g. "the requirements document" or "change C1 (in api)". */
+  readonly subject: string;
+  /** The material the agent talks about, as titled sections (documents, change spec, findings, diff). */
+  readonly material: readonly { readonly title: string; readonly body: string | undefined }[];
+  readonly repos: readonly RepoRef[];
+  readonly history: readonly ChatEntry[];
+  readonly message: string;
+  readonly author: string;
+  /** What forge does with feedback right now, or why it can't take any. */
+  readonly feedback: { readonly accepted: true; readonly effect: string } | { readonly accepted: false; readonly reason: string };
+};
+
+const transcript = (history: readonly ChatEntry[]): string =>
+  history
+    .map((m) => `**${m.role === 'human' ? m.by : m.role === 'agent' ? 'you' : 'forge'}**: ${m.text}${m.feedback ? `\n_(queued as feedback: ${m.feedback})_` : ''}`)
+    .join('\n\n');
+
+export const chatPrompt = (i: ChatInputs): string => `# Stage: chat — ${i.subject}
+
+You are the agent responsible for ${i.subject} in the epic "${i.epic.title}". ${i.author} is talking to you in a chat. Answer as a teammate who knows this work well.
+
+${i.material.map((m) => section(m.title, m.body)).join('')}${section('Repositories (read-only)', i.repos.length ? reposList(i.repos) : undefined)}${section('Conversation so far', i.history.length ? transcript(i.history) : undefined)}## New message from ${i.author}
+
+${i.message.trim()}
+
+## How to answer
+
+- Answer questions directly and briefly, grounded in the material above. Read the code when the answer depends on it; cite files as \`path:line\`.
+- You only have read-only tools. Never claim you changed a file.
+${
+  i.feedback.accepted
+    ? `- When the message asks for something in ${i.subject} to change (add, remove, rename, split, rework, do it differently), write that request in "feedback" as a complete, specific instruction for the agent that revises the work: it will not see this chat. Forge then ${i.feedback.effect}. Say so in "reply", in a sentence.
+- When the request is ambiguous, ask in "reply" and leave "feedback" empty. Leave "feedback" empty for questions.`
+    : `- Nothing can be changed right now: ${i.feedback.reason}. If the message asks for a change, say so in "reply" and leave "feedback" empty.`
+}
+- Write "reply" in Markdown for a narrow chat panel: short paragraphs and lists, no headings.
+`;
+
+export const CHAT_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    reply: { type: 'string' },
+    feedback: { type: 'string', description: 'Empty unless the human asked for a change.' },
+  },
+  required: ['reply'],
+  additionalProperties: false,
 };

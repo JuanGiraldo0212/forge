@@ -3,6 +3,7 @@
  */
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import type { ConnectionInfo, FolderRequest, Outcome, UpdateView } from '../shared/api.ts';
+import { ChatPanel } from './components/ChatPanel.tsx';
 import { AssignDialog, BackDialog, NewEpicDialog, NoteDialog, SettingsDialog, Welcome } from './components/Dialogs.tsx';
 import { DocPanel } from './components/DocPanel.tsx';
 import { ConnectDialog, RemoteFolderPicker } from './components/Remote.tsx';
@@ -10,9 +11,26 @@ import { RepoDialog } from './components/RepoDialog.tsx';
 import { ChangeBar, ChangeList, EpicHeader } from './components/Epic.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { UpdateNotice } from './components/Update.tsx';
-import { currentTab, currentView, initialState, reducer, selectedChange, selectedEpic, stageView, tabsFor, type ActionSpec } from './model.ts';
+import { chatThreads, currentTab, currentView, initialState, reducer, selectedChange, selectedEpic, stageView, tabsFor, type ActionSpec } from './model.ts';
 
 const api = () => window.forge;
+
+/** Whether the chat panel is hidden: a per-viewer preference, so browser storage (when it is available). */
+const CHAT_HIDDEN_KEY = 'forge.chatHidden';
+const readChatHidden = (): boolean => {
+  try {
+    return localStorage.getItem(CHAT_HIDDEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+const writeChatHidden = (hidden: boolean) => {
+  try {
+    localStorage.setItem(CHAT_HIDDEN_KEY, hidden ? '1' : '0');
+  } catch {
+    // Not remembered; it still works for this session.
+  }
+};
 
 const Toast = ({ toast, onClose }: { toast: Outcome & { id: number }; onClose: () => void }) => {
   useEffect(() => {
@@ -36,6 +54,11 @@ export const App = () => {
   const [connection, setConnection] = useState<ConnectionInfo>({ kind: 'local' });
   const [connecting, setConnecting] = useState(false);
   const [folderRequest, setFolderRequest] = useState<FolderRequest | undefined>();
+  const [chatHidden, setChatHidden] = useState(readChatHidden);
+  const toggleChat = (hidden: boolean) => {
+    setChatHidden(hidden);
+    writeChatHidden(hidden);
+  };
   const [update, setUpdate] = useState<UpdateView | undefined>();
   const ref = useRef(s);
   ref.current = s;
@@ -180,6 +203,8 @@ export const App = () => {
   const tab = currentTab(s);
   const dialog = s.dialog;
   const showChanges = (view === 'changes' || view === 'development') && !!epic?.changes.length;
+  const threads = epic ? chatThreads(epic, view, showChanges ? change : undefined) : [];
+  const chatOpen = threads.length > 0 && !chatHidden;
 
   return (
     <div className="app">
@@ -214,7 +239,7 @@ export const App = () => {
               onAction={(a) => void perform(a)}
               onAssign={() => void perform({ id: 'assign', label: '', kind: 'secondary' })}
             />
-            <div className={`epic-body${showChanges ? ' with-changes' : ''}`}>
+            <div className={`epic-body${showChanges ? ' with-changes' : ''}${chatOpen ? ' with-chat' : ''}`}>
               {showChanges && <ChangeList epic={epic} selected={change?.id} onSelect={(id) => dispatch({ type: 'select-change', changeId: id })} />}
               <div className="epic-content">
                 {showChanges && change && (
@@ -246,6 +271,29 @@ export const App = () => {
                   busy={busy}
                 />
               </div>
+              {chatOpen ? (
+                <ChatPanel
+                  epic={epic}
+                  threads={threads}
+                  actor={s.workspace.actor}
+                  busy={busy}
+                  onSend={async (thread, text) => {
+                    const o = await api().chat(epic.slug, thread, text);
+                    await reload();
+                    // The reply shows in the thread; only say more when something else happened.
+                    if (o.text) dispatch({ type: 'toast', outcome: o });
+                    return o;
+                  }}
+                  onOpenUrl={(u) => void api().openExternal(u)}
+                  onCollapse={() => toggleChat(true)}
+                />
+              ) : (
+                threads.length > 0 && (
+                  <button className="chat-reopen" onClick={() => toggleChat(false)} title="Chat with the agent">
+                    Chat
+                  </button>
+                )
+              )}
             </div>
           </>
         )}

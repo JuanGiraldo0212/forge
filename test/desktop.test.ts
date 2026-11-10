@@ -6,14 +6,14 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import type { Deps } from '../src/application/deps.ts';
 import type { ChangeState, Epic } from '../src/domain/epic.ts';
 import { ok } from '../src/domain/result.ts';
+import { loadEpic, type Deps } from '../src/application/deps.ts';
 import { createHandlers } from '../src/desktop/main/handlers.ts';
 import type { Session } from '../src/desktop/main/session.ts';
 import { fileSettings, type Keychain } from '../src/desktop/main/settings.ts';
 import { mergePaths } from '../src/desktop/main/shellEnv.ts';
-import { changeActions, currentTab, currentView, epicActions, epicHint, initialState, reducer, runWouldDoSomething, stepState, tabsFor } from '../src/desktop/renderer/model.ts';
+import { changeActions, chatThreads, currentTab, currentView, epicActions, epicHint, initialState, reducer, runWouldDoSomething, stepState, tabsFor } from '../src/desktop/renderer/model.ts';
 import type { Outcome } from '../src/ui/actions.ts';
 import { EPIC_SPEC, makeDeps, makeRepo, REQUIREMENTS, scriptedAgent, sh, stageOf, tempDir } from './helpers.ts';
 
@@ -31,6 +31,7 @@ const epic = (patch: Partial<Epic> = {}): Epic => ({
   changes: [],
   pastDialogs: {},
   costUsd: 0,
+  chats: {},
   ...patch,
 });
 
@@ -86,11 +87,23 @@ describe('desktop view model', () => {
     assert.equal(epicActions(unblocked, false)[0]?.id, 'run');
   });
 
-  it('routes change actions by status', () => {
-    assert.deepEqual(ids(changeActions(change('C1', 'draft'), false)), ['approve', 'revise', 'drop']);
-    assert.deepEqual(ids(changeActions(change('C1', 'awaiting_review'), false)), ['approve', 'revise']);
-    assert.deepEqual(ids(changeActions(change('C1', 'escalated'), false)), ['revise', 'drop']);
+  it('routes change actions by status; feedback goes through the chat', () => {
+    assert.deepEqual(ids(changeActions(change('C1', 'draft'), false)), ['approve', 'drop']);
+    assert.deepEqual(ids(changeActions(change('C1', 'awaiting_review'), false)), ['approve']);
+    assert.deepEqual(ids(changeActions(change('C1', 'escalated'), false)), ['drop']);
+    assert.deepEqual(ids(changeActions(change('C1', 'mr_open'), false)), ['sync']);
     assert.deepEqual(changeActions(change('C1', 'draft'), true), [], 'nothing while the epic runs');
+    assert.ok(!ids(epicActions(epic({ status: 'awaiting_approval' }), false)).includes('revise'));
+  });
+
+  it('picks the chat threads for what is on screen', () => {
+    const e = epic({ stage: 'development', changes: [change('C1', 'awaiting_review')] });
+    assert.deepEqual(chatThreads(e, 'requirements', undefined), ['requirements']);
+    assert.deepEqual(chatThreads(e, 'spec', undefined), ['spec']);
+    assert.deepEqual(chatThreads(e, 'changes', e.changes[0]), ['C1', 'changes']);
+    assert.deepEqual(chatThreads(e, 'changes', undefined), ['changes']);
+    assert.deepEqual(chatThreads(e, 'development', e.changes[0]), ['C1']);
+    assert.deepEqual(chatThreads(e, 'development', undefined), []);
   });
 
   it('selects the change that needs a decision and shows the matching tab', () => {
@@ -166,9 +179,13 @@ describe('desktop IPC handlers', () => {
     const api = await makeRepo(dir, 'api');
     let release: () => void = () => {};
     const gate = new Promise<void>((r) => (release = r));
+    let releaseRerun: () => void = () => {};
+    const rerunGate = new Promise<void>((r) => (releaseRerun = r));
+    let requirementsRuns = 0;
     const agent = scriptedAgent([], async (req) => {
+      if (stageOf(req) === 'chat') return { structured: { reply: 'On it.', feedback: 'Mention search filters.' } };
       if (stageOf(req) === 'requirements') {
-        await gate;
+        await (++requirementsRuns === 1 ? gate : rerunGate);
         return { text: REQUIREMENTS.replace('Users need the thing.', '<img src=x onerror="alert(1)"> fine') };
       }
       if (stageOf(req) === 'epic spec') return { text: EPIC_SPEC };
@@ -184,7 +201,7 @@ describe('desktop IPC handlers', () => {
       openExternal: async (url) => void opened.push(url),
       settings: fileSettings(join(dir, 'settings.json'), { available: () => false, encrypt: () => Buffer.alloc(0), decrypt: () => '' }),
     });
-    return { dispatch, release, opened, deps };
+    return { dispatch, release, releaseRerun, opened, deps, sess };
   };
 
   it('validates arguments from the renderer', async () => {
@@ -192,6 +209,8 @@ describe('desktop IPC handlers', () => {
     await assert.rejects(dispatch('run', ['../../etc', false]), /Invalid arguments for run/);
     await assert.rejects(dispatch('readDoc', ['ok', 'secrets.md']), /Invalid arguments/);
     await assert.rejects(dispatch('revise', ['ok', null, '']), /Invalid arguments/, 'feedback is required');
+    await assert.rejects(dispatch('chat', ['ok', 'requirements', '  ']), /Invalid arguments/, 'chat messages are required');
+    await assert.rejects(dispatch('chat', ['ok', '../C1', 'hi']), /Invalid arguments/, 'threads are stage names or change ids');
   });
 
   it('runs one action per epic at a time, and blocks edits while it runs', async () => {
@@ -212,6 +231,27 @@ describe('desktop IPC handlers', () => {
     const view = (await dispatch('readDoc', [slug, 'requirements.md'])) as { content: string; editable: boolean };
     assert.match(view.content, /onerror/, 'raw markdown goes to the renderer, which sanitizes it');
     assert.equal(view.editable, true);
+  });
+
+  it('answers in the chat right away, and reruns the stage it asked to change in the background', async () => {
+    const { dispatch, release, releaseRerun, sess, deps } = await setup();
+    release();
+    const slug = ((await dispatch('createEpic', ['Search', 'Users want search'])) as Outcome).select!;
+    assert.ok(((await dispatch('run', [slug, false])) as Outcome).ok);
+
+    const reply = (await dispatch('chat', [slug, 'requirements', 'Add search filters'])) as Outcome;
+    assert.ok(reply.ok, JSON.stringify(reply));
+    assert.match(reply.text, /Queued as feedback: forge regenerates the requirements document/);
+    assert.deepEqual(sess.busy(), [slug], 'the rerun holds the epic');
+    const during = (await dispatch('chat', [slug, 'requirements', 'Change it again'])) as Outcome;
+    assert.ok(during.ok, 'questions are still answered while it runs');
+    const e = await loadEpic(deps, slug);
+    assert.ok(e.ok && e.value.chats.requirements!.some((m) => m.role === 'forge' && /Not queued: agents are working/.test(m.text)));
+
+    releaseRerun();
+    while (sess.busy().length) await new Promise((r) => setTimeout(r, 10));
+    const after = await loadEpic(deps, slug);
+    assert.ok(after.ok && after.value.status === 'awaiting_approval' && after.value.revision === 2, 'regenerated with the feedback');
   });
 
   it('only opens web links externally', async () => {
