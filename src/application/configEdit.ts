@@ -4,7 +4,7 @@
  */
 import { isMap, parse, parseDocument, type Document } from 'yaml';
 import { err, ok, type Result } from '../domain/result.ts';
-import { applyLocal, parseConfig } from './config.ts';
+import { applyLocal, GITLAB_AUTH_MODES, parseConfig, type GitlabAuth } from './config.ts';
 
 export type CheckEdit = { readonly name: string; readonly run: string };
 
@@ -71,14 +71,24 @@ repos: {}
 
 export type EditedFiles = { readonly config: string; readonly local: string };
 
+const DEFAULT_GITLAB_URL = 'https://gitlab.com';
+
+/** The GitLab instance's URL (gitlab.baseUrl) as the shared config sets it, else forge's default. */
+export const readGitlabBaseUrl = (configText: string | undefined): string => {
+  const url = asRecord(asRecord(configText ? parse(configText) : {}).gitlab).baseUrl;
+  return typeof url === 'string' && url.trim() ? url.trim() : DEFAULT_GITLAB_URL;
+};
+
 /**
  * Applies the full list of repos (adds, edits, removals) to both files and validates the result the
  * same way forge does on startup. Nothing is returned unless the merged config is valid.
+ * With `gitlabBaseUrl`, also sets the GitLab instance (left out of the file when it's the default).
  */
 export const applyRepoEdits = (
   configText: string | undefined,
   localText: string | undefined,
   edits: readonly RepoEdit[],
+  gitlabBaseUrl?: string,
 ): Result<EditedFiles, readonly string[]> => {
   const names = edits.map((e) => e.name);
   const dupes = names.filter((n, i) => names.indexOf(n) !== i);
@@ -120,6 +130,13 @@ export const applyRepoEdits = (
   }
   if (isEmptyMap(local.getIn(['repos']))) del(local, ['repos']);
 
+  if (gitlabBaseUrl !== undefined) {
+    const url = gitlabBaseUrl.trim().replace(/\/+$/, '');
+    if (url && !/^https?:\/\//i.test(url)) return err([`GitLab URL must start with https:// or http:// (got "${url}")`]);
+    setOrDelete(config, ['gitlab', 'baseUrl'], url || undefined, DEFAULT_GITLAB_URL);
+    if (isEmptyMap(config.getIn(['gitlab']))) del(config, ['gitlab']);
+  }
+
   const configOut = config.toString();
   const localJs = local.toJS();
   const localOut = localJs && Object.keys(asRecord(localJs)).length ? local.toString() : '';
@@ -128,4 +145,41 @@ export const applyRepoEdits = (
   if (!merged.ok) return merged;
   const valid = parseConfig(merged.value);
   return valid.ok ? ok({ config: configOut, local: localOut }) : err(valid.error);
+};
+
+const authOf = (text: string | undefined): GitlabAuth | undefined => {
+  const auth = asRecord(asRecord(text ? parse(text) : {}).gitlab).auth;
+  return GITLAB_AUTH_MODES.find((mode) => mode === auth);
+};
+
+/** How forge signs in to GitLab on this machine: the team's choice in config.yaml, or this machine's in local.yaml. */
+export type GitlabAuthSetting = { readonly auth: GitlabAuth; readonly shared: GitlabAuth };
+
+export const readGitlabAuth = (configText: string | undefined, localText: string | undefined): GitlabAuthSetting => {
+  const shared = authOf(configText) ?? 'token';
+  return { auth: authOf(localText) ?? shared, shared };
+};
+
+/**
+ * Sets how forge signs in to GitLab for this machine only, in local.yaml. Choosing the team's mode drops the
+ * override, so a later change to the shared config reaches this machine again.
+ */
+export const applyGitlabAuth = (
+  configText: string | undefined,
+  localText: string | undefined,
+  auth: GitlabAuth,
+): Result<EditedFiles, readonly string[]> => {
+  if (configText === undefined) return err(['this workspace has no .forge/config.yaml']);
+  const local = parseDocument(localText ?? '');
+  if (local.errors.length) return err([`.forge/local.yaml: ${local.errors[0]!.message}`]);
+
+  setOrDelete(local, ['gitlab', 'auth'], auth, readGitlabAuth(configText, undefined).shared);
+  if (isEmptyMap(local.getIn(['gitlab']))) del(local, ['gitlab']);
+  const localJs = local.toJS();
+  const localOut = localJs && Object.keys(asRecord(localJs)).length ? local.toString() : '';
+
+  const merged = applyLocal(parse(configText), localOut ? parse(localOut) : undefined);
+  if (!merged.ok) return merged;
+  const valid = parseConfig(merged.value);
+  return valid.ok ? ok({ config: configText, local: localOut }) : err(valid.error);
 };

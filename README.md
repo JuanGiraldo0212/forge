@@ -107,7 +107,9 @@ repo chips (also in ⚙ Settings). You can add, edit and remove repos there. Pic
 - the base branch;
 - setup and check commands, from `package.json`/lockfiles, `go.mod`, `Cargo.toml` and similar.
 
-It also warns when the remote isn't on your GitLab host. Shared values are saved to
+Set **GitLab URL** at the top for a self-hosted instance (e.g. `https://gitlab.example.com`; saved as
+`gitlab.baseUrl`, default `https://gitlab.com`). A repo whose remote is on another host gets a
+warning with a button to switch the URL to that host. Shared values are saved to
 `.forge/config.yaml`, keeping your comments, and per-machine paths to `.forge/local.yaml`. A repo
 can't be removed while unfinished changes still build in it.
 
@@ -146,8 +148,33 @@ npm start -- ~/forge-demo/planning    # builds and opens the app on that workspa
 ```
 
 For your own repos, run `npm start`, choose **Set up a new workspace…**, pick your planning repo (an
-empty git repo is fine), and add your code repos. Export `GITLAB_TOKEN` (api scope) before starting,
-or save it under ⚙ Settings; only forge sees it, never the agents.
+empty git repo is fine), and add your code repos. Then give forge access to GitLab's API, which it uses
+to open and read merge requests, in one of two ways:
+
+- **GitLab token** (the default): export `GITLAB_TOKEN` (api scope) before starting, or save it under
+  ⚙ Settings. Only forge sees it, never the agents.
+- **GitLab CLI login**: sign in with [glab](https://gitlab.com/gitlab-org/cli)
+  (`glab auth login --hostname gitlab.example.com`) on the machine forge runs on, and choose
+  *GitLab CLI (glab) login* under ⚙ Settings. Forge then stores no token.
+
+### GitLab sign-in
+
+`gitlab.auth` picks how forge signs its GitLab API calls: `token` (default) or `glab`. Pushing branches
+uses the machine's own git credentials either way.
+
+```yaml
+# .forge/config.yaml: the team's default. Leave it out to keep the token.
+gitlab:
+  baseUrl: https://gitlab.example.com
+  auth: glab
+```
+
+Each developer can override it in `.forge/local.yaml` (`gitlab: { auth: glab }`), which is what the
+switch under ⚙ Settings writes. In glab mode, forge calls `glab api --hostname <host of gitlab.baseUrl>`
+with the same requests and JSON as the token mode, and sends request bodies on stdin. The settings
+screen checks the login with `glab api user` and shows who is signed in, or the `glab auth login`
+command to run. Forge keeps its own token variable away from glab, so glab uses its login. glab
+needs to be on the PATH that forge sees (the login shell's PATH for the desktop app).
 
 ## Desktop app
 
@@ -170,8 +197,9 @@ npm run package                       # unpacked build in dist-desktop/ (drop --
 - **Renderer locked down:** context isolation, sandbox, no Node integration, a strict CSP in packaged
   builds, no navigation or new windows, and only http(s) links (opened in the browser). Agent-written
   markdown is sanitized (DOMPurify). Every IPC argument is checked against a schema.
-- **GitLab token:** the settings screen stores it encrypted in the OS keychain (Electron safeStorage).
-  If no keychain is available, set the env var instead. Agents never see it.
+- **GitLab sign-in:** the settings screen switches between a token and the glab login (see
+  [GitLab sign-in](#gitlab-sign-in)). It stores a token encrypted in the OS keychain (Electron
+  safeStorage). If no keychain is available, set the env var instead. Agents never see it.
 - **PATH:** when launched from the Dock or a launcher, the app reads PATH from your login shell, so
   git, node and npm resolve.
 - **Packaged builds:** the Agent SDK's native binary is unpacked from the asar archive, and the app
@@ -181,8 +209,8 @@ npm run package                       # unpacked build in dist-desktop/ (drop --
   the fix: an AppArmor profile for forge's Electron binary (recommended), or a setuid-root
   `chrome-sandbox`. Don't use `--no-sandbox`. The renderer shows agent-written content, and the
   sandbox is part of its protection. The `.deb` package should set up the helper when it's installed.
-- **Agents stop when the app quits.** It asks first while agents are running. Only one action runs per
-  epic at a time.
+- **Agents stop when the app quits.** It asks first while agents are running, and so does restarting
+  to install an update. Only one action runs per epic at a time.
 
 ### Remote workspaces (SSH)
 
@@ -201,11 +229,45 @@ worktrees and files all stay on the server.
 - **Secrets stay on your machine:** a remembered SSH password and the GitLab token are stored encrypted
   in the local OS keychain. The token is handed to the server process over the connection, never on a
   command line or on disk there.
+- **GitLab CLI login on the server:** with `gitlab.auth: glab`, forge uses the glab login **of the
+  server**, not of your computer. Install glab there and run `glab auth login --hostname <host>` in an
+  SSH session. The settings screen runs its check on the server and says so. In this mode no token
+  leaves your machine.
 - **Claude credentials:** with *Let agents on the server use this machine's Claude credentials*,
   `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` from the app's environment are passed the same way.
   Otherwise agents use whatever Claude login the server has.
 - **The server stops when you disconnect**, or when the connection drops, and with it any running
   agents (as when the app quits locally). Disconnecting is refused while agents run.
+
+### Releases and updates
+
+The installed app checks GitHub Releases for a newer version 15 seconds after it starts and then every
+4 hours. It downloads the update in the background and shows **Forge x.y.z is ready** with a
+**Restart** button in the sidebar. If you don't restart, the update installs the next time you quit.
+**Settings → Updates** shows the version and the last check, and has **Check for updates**.
+
+- **Where it works:** the AppImage, the `.deb` (installed with `pkexec dpkg`, so it asks for your
+  password) and the Windows installer. macOS builds aren't signed yet, and macOS won't install an update
+  into an unsigned app, so a Mac shows **Download** and opens the release page instead.
+  `installsInPlace` in `src/desktop/main/updates.ts` changes that once releases are signed.
+- **Where it's off:** `npm start`, `npm run dev`, an unpacked build, and any install with
+  `FORGE_DISABLE_AUTO_UPDATE=1` set. Settings says why.
+- **SSH hosts** need nothing extra: after an update, the app uploads its new server the next time it
+  connects.
+
+To cut a release, bump `version` in `package.json`, commit, and push a matching tag:
+
+```bash
+npm version 0.2.0 --no-git-tag-version && git commit -am "Release 0.2.0"
+git tag v0.2.0 && git push origin main v0.2.0
+```
+
+`.github/workflows/release.yml` then creates a draft release with generated notes, builds the AppImage,
+`.deb`, Windows installer and macOS `.dmg`/`.zip` (arm64 and x64), and uploads them with the update
+manifests (`latest*.yml`). It publishes the release only after every platform has uploaded, because the
+updater ignores drafts and a half-uploaded release would offer some platforms nothing to download. To
+turn on signing, add the `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`, `APPLE_ID`,
+`APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`, `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` secrets.
 
 ## Architecture
 
@@ -215,10 +277,11 @@ are factories that return them, and the only place they are wired together is `s
 ```
 src/domain/        pure: event-sourced Epic aggregate (epic.ts), change spec parsing/validation and
                    scheduling (changes.ts), requirements and epic spec lint (spec.ts), guards, loop/gate/cost policy. No I/O.
-src/ports/         interfaces: EpicStore, ArtifactStore, RepoContext, AgentRunner, Vcs, CodeHost, CheckRunner
+src/ports/         interfaces: EpicStore, ArtifactStore, RepoContext, AgentRunner, Vcs, CodeHost (+ GitlabAccess), CheckRunner
 src/application/   use cases: stages (requirements, epic spec), changes (draft/approve/drop), build, prompts, renderers
-src/adapters/      fs, git (worktrees), gitlab (REST v4), claudeAgent (Agent SDK), process (checks)
-src/app/           composition root (one Vcs + CodeHost per configured repo) and workspace setup
+src/adapters/      fs, git (worktrees), gitlab (REST v4 with a token), glab (the same calls through the GitLab CLI),
+                   claudeAgent (Agent SDK), process (checks)
+src/app/           composition root (one Vcs + CodeHost per configured repo, token or glab by gitlab.auth) and workspace setup
 src/ui/            the actions behind the app's buttons
 src/desktop/       Electron: main (session, validated IPC handlers, settings, connection), preload, renderer (React)
 src/desktop/remote/ SSH transport, the forge server run on SSH hosts, and the JSON-lines RPC between them
@@ -246,7 +309,12 @@ append events.
 
 Build agents get:
 - Bash inside the Agent SDK sandbox (bubblewrap on Linux). Writes are limited to the worktree,
-  network access to `build.allowedDomains`, and credential directories can't be read.
+  network access to `build.allowedDomains`, and credential directories can't be read. That includes
+  glab's login on every platform (`~/.config/glab-cli`, the macOS and Windows defaults, a snap
+  install, `$XDG_CONFIG_HOME/glab-cli` and `$GLAB_CONFIG_DIR`).
+
+Every agent, planning and review included, also has Read rules that deny those credential paths,
+because the sandbox only binds Bash and the Read, Grep and Glob tools follow permission rules.
 - An environment with secrets removed.
 - No access to git push, commit, remote or config, and no web tools.
 - No MCP servers, plugins or skills from the developer's machine.
@@ -261,7 +329,7 @@ running total, so forge records only what each run added.
 
 ## Verified
 
-- `npm run check`: typecheck plus 64 tests, covering:
+- `npm run check`: typecheck plus 97 tests, covering:
   - the domain rules: lifecycle, change specs, cross-repo dependencies, cost;
   - end-to-end runs with real git and bare remotes:
     - a two-repo epic: per-change approval, a single redraft, a dropped change, a cross-repo
@@ -280,7 +348,11 @@ running total, so forge records only what each run added.
     folder;
   - the desktop view model and IPC handlers: argument validation, one action per epic, link
     filtering, repo save, the remove guard, and new-workspace setup;
-  - keychain-only token storage, and the PATH merge.
+  - keychain-only token storage, and the PATH merge;
+  - GitLab sign-in: the glab adapter against a scripted glab (same JSON body as the REST adapter, on
+    stdin; missing, signed-out, expired and unreachable cases), the `gitlab.auth` default and the
+    `local.yaml` override, composition picking the adapter, and the settings switch locally and
+    through the SSH server.
 - Desktop app, driven in a real Electron window (dev and packaged builds) on the live demo:
   - every view renders;
   - an XSS probe stays inert: no script ran, and the `onerror` and `javascript:` link were stripped;
@@ -299,4 +371,4 @@ running total, so forge records only what each run added.
 - A retro stage that turns escalations and findings into proposed rule files.
 - Stacked branches for dependent changes (today a dependent waits for its dependency to merge).
 - A lock against two app windows acting on the same epic (one window already allows only one action per epic).
-- Desktop: macOS signing and notarization, Windows signing, auto-update, an app icon. The build sandbox on Windows is untested.
+- Desktop: macOS signing and notarization (and so in-place updates on macOS), Windows signing, an app icon. The build sandbox on Windows is untested.

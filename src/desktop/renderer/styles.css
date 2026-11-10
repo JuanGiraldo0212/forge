@@ -487,9 +487,24 @@ a {
   color: var(--bad);
 }
 
+.banner-good {
+  background: var(--good-soft);
+  color: var(--good);
+}
+
 .banner-info {
   background: var(--info-soft);
   color: var(--info);
+}
+
+.banner-with-action {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.banner-with-action > span {
+  flex: 1;
 }
 
 /* ---------- epic ---------- */
@@ -1868,4 +1883,20 @@ a {
     z-index: 5;
     box-shadow: -8px 0 24px rgba(0, 0, 0, 0.18);
   }
+}
+
+/* ---------- app updates ---------- */
+
+.update-notice {
+  margin: 0 10px 10px;
+}
+
+.welcome-update {
+  max-width: 560px;
+  margin: 16px auto 0;
+  padding: 0 24px;
+}
+
+.welcome-update .update-notice {
+  margin: 0;
 }

@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { err, ok, type Result } from '../domain/result.ts';
 
+export const GITLAB_AUTH_MODES = ['token', 'glab'] as const;
+
+/** How forge authenticates GitLab API calls. */
+export type GitlabAuth = (typeof GITLAB_AUTH_MODES)[number];
+
 const CheckSchema = z.object({ name: z.string().min(1), run: z.string().min(1) });
 
 const RepoSchema = z
@@ -84,6 +89,11 @@ export const ConfigSchema = z.object({
       baseUrl: z.string().url().default('https://gitlab.com'),
       /** Name of the env var holding the token. The token never reaches agents. */
       tokenEnv: z.string().default('GITLAB_TOKEN'),
+      /**
+       * How forge signs its GitLab API calls (opening and reading MRs): a token from tokenEnv, or the GitLab
+       * CLI (glab) login of the machine forge runs on. Overridable per developer in .forge/local.yaml.
+       */
+      auth: z.enum(GITLAB_AUTH_MODES).default('token'),
     })
     .prefault({}),
   /** Code repos an epic can change. Each change spec names exactly one. */
@@ -97,23 +107,25 @@ export type Config = z.infer<typeof ConfigSchema>;
 const LocalSchema = z.object({
   worktreeRoot: z.string().optional(),
   repos: z.record(z.string(), z.object({ path: z.string() })).optional(),
+  gitlab: z.object({ auth: z.enum(GITLAB_AUTH_MODES).optional() }).optional(),
 });
 
 /**
  * Applies a developer's .forge/local.yaml (not committed) over the shared config.
- * Only machine-specific values are overridable: repo paths and the worktree root.
+ * Only machine-specific values are overridable: repo paths, the worktree root and how forge signs in to GitLab.
  */
 export const applyLocal = (shared: unknown, local: unknown): Result<unknown, readonly string[]> => {
   if (local === undefined || local === null) return ok(shared);
   const parsed = LocalSchema.safeParse(local);
   if (!parsed.success) return err(parsed.error.issues.map((i) => `local.yaml ${i.path.join('.')}: ${i.message}`));
-  const base = (shared ?? {}) as { repos?: Record<string, Record<string, unknown>>; worktreeRoot?: string };
+  const base = (shared ?? {}) as { repos?: Record<string, Record<string, unknown>>; worktreeRoot?: string; gitlab?: Record<string, unknown> };
   const unknown = Object.keys(parsed.data.repos ?? {}).filter((name) => !base.repos?.[name]);
   if (unknown.length) return err([`local.yaml overrides unknown repos: ${unknown.join(', ')}`]);
   const repos = Object.fromEntries(
     Object.entries(base.repos ?? {}).map(([name, repo]) => [name, { ...repo, ...parsed.data.repos?.[name] }]),
   );
-  return ok({ ...base, repos, worktreeRoot: parsed.data.worktreeRoot ?? base.worktreeRoot });
+  const auth = parsed.data.gitlab?.auth;
+  return ok({ ...base, repos, worktreeRoot: parsed.data.worktreeRoot ?? base.worktreeRoot, ...(auth ? { gitlab: { ...base.gitlab, auth } } : {}) });
 };
 
 export const parseConfig = (raw: unknown): Result<Config, readonly string[]> => {

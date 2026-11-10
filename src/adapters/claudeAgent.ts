@@ -9,7 +9,7 @@
  */
 import { createSdkMcpServer, query, tool, type Options, type SDKMessage, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { relative } from 'node:path';
+import { join, relative } from 'node:path';
 import { err, ok } from '../domain/result.ts';
 import type { AgentQuestion, AgentRequest, AgentRunner } from '../ports/index.ts';
 
@@ -31,7 +31,38 @@ const BUILD_DENY = [
   'WebSearch',
 ];
 
-const CREDENTIAL_PATHS = ['~/.ssh', '~/.aws', '~/.config/gcloud', '~/.config/glab-cli', '~/.netrc', '~/.git-credentials', '~/.docker'];
+/**
+ * Files and folders that hold credentials. Includes glab's login wherever glab keeps it: its legacy and Linux
+ * folder, the macOS and Windows defaults, a snap install, and the folders XDG_CONFIG_HOME or GLAB_CONFIG_DIR pick.
+ */
+export const credentialPaths = (env: NodeJS.ProcessEnv): readonly string[] => [
+  '~/.ssh',
+  '~/.aws',
+  '~/.config/gcloud',
+  '~/.netrc',
+  '~/.git-credentials',
+  '~/.docker',
+  '~/.config/glab-cli',
+  '~/Library/Application Support/glab-cli',
+  '~/AppData/Local/glab-cli',
+  '~/snap/glab',
+  ...(env.LOCALAPPDATA ? [join(env.LOCALAPPDATA, 'glab-cli')] : []),
+  ...(env.XDG_CONFIG_HOME ? [join(env.XDG_CONFIG_HOME, 'glab-cli')] : []),
+  ...(env.GLAB_CONFIG_DIR ? [env.GLAB_CONFIG_DIR] : []),
+];
+
+/**
+ * The sandbox's denyRead binds Bash only; Read, Grep and Glob follow permission rules. A credential path may be
+ * a file or a folder, so both spellings are denied.
+ */
+const credentialReadRules = (paths: readonly string[]): readonly string[] =>
+  paths.flatMap((path) => {
+    const rule = path.startsWith('~/') ? path : absoluteRulePath(path.replace(/\\/g, '/'));
+    return [`Read(${rule})`, `Read(${rule}/**)`];
+  });
+
+/** Permission rules take absolute paths as "//abs/path". */
+const absoluteRulePath = (path: string): string => `/${path.startsWith('/') ? path : `/${path}`}`;
 
 const SECRET_ENV = /(TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE|CREDENTIAL|_KEY)$/i;
 
@@ -149,8 +180,11 @@ export const optionsFor = (req: AgentRequest, opts: ClaudeAgentOptions, abortCon
     stderr: opts.onStderr,
     outputFormat: req.outputSchema ? { type: 'json_schema', schema: req.outputSchema } : undefined,
   };
-  // Permission rules take absolute paths as "//abs/path".
-  const denyRead = (req.denyRead ?? []).map((p) => `Read(/${p.startsWith('/') ? p : `/${p}`})`);
+  const credentials = credentialPaths(process.env);
+  const denyRead = [
+    ...(req.denyRead ?? []).map((p) => `Read(${absoluteRulePath(p)})`),
+    ...credentialReadRules(credentials),
+  ];
   if (req.mode === 'read' && req.ask)
     return {
       ...base,
@@ -173,7 +207,7 @@ export const optionsFor = (req: AgentRequest, opts: ClaudeAgentOptions, abortCon
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: false,
       network: { allowedDomains: [...opts.allowedDomains] },
-      filesystem: { allowWrite: [req.cwd], denyRead: CREDENTIAL_PATHS },
+      filesystem: { allowWrite: [req.cwd], denyRead: [...credentials] },
     },
   };
 };

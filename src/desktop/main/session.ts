@@ -8,6 +8,8 @@ import { basename } from 'node:path';
 import type { Deps } from '../../application/deps.ts';
 import { composeDeps, findRepoRoot } from '../../app/compose.ts';
 import { err, ok, type Result } from '../../domain/result.ts';
+import { instanceHost } from '../../adapters/gitlab.ts';
+import type { GitlabAccess } from '../../ports/index.ts';
 import type { WorkspaceInfo } from '../shared/api.ts';
 import type { WorkspaceSettings } from './settings.ts';
 
@@ -19,6 +21,8 @@ export type SessionEvents = {
 export type Session = {
   readonly info: WorkspaceInfo;
   readonly deps: Deps;
+  /** Checks the GitLab sign-in on the machine this session runs on. */
+  readonly gitlabAccess: () => Promise<GitlabAccess>;
   /** Runs `work` for one epic with a fresh abort signal threaded into every agent it starts. Refuses if that epic is busy. */
   readonly exclusive: <T>(slug: string, work: (deps: Deps) => Promise<T>) => Promise<Result<T, string>>;
   readonly stop: (slug: string) => void;
@@ -35,11 +39,12 @@ export const openSession = async (
   const root = await findRepoRoot(path);
   if (!root.ok) return err(`${path} is not inside a git repository.`);
 
-  // A token stored in the keychain stands in for the env var, for this process only.
+  // A token stored in the keychain stands in for the env var, for this process only. The glab login needs none.
   const raw = await composeDeps(root.value, { log: { info() {}, warn() {} } });
   if (!raw.ok) return raw;
-  const tokenEnv = raw.value.deps.config.gitlab.tokenEnv;
-  const stored = process.env[tokenEnv] ? undefined : await settings.token(tokenEnv);
+  const { tokenEnv, auth, baseUrl } = raw.value.deps.config.gitlab;
+  const wantsStoredToken = auth === 'token' && !process.env[tokenEnv];
+  const stored = wantsStoredToken ? await settings.token(tokenEnv) : undefined;
   if (stored) process.env[tokenEnv] = stored;
 
   // Progress shows in the UI through epic state; warnings (e.g. a repo snapshot that couldn't refresh) go to the log.
@@ -49,7 +54,7 @@ export const openSession = async (
     { agentExecutable: options.agentExecutable },
   );
   if (!composed.ok) return composed;
-  const { deps, warnings, epicsRoot } = composed.value;
+  const { deps, warnings, epicsRoot, gitlabAccess } = composed.value;
 
   const running = new Map<string, AbortController>();
   const busy = () => [...running.keys()];
@@ -77,6 +82,8 @@ export const openSession = async (
       present: !warnings.some((w) => w.startsWith(`repo "${r.name}"`)),
     })),
     warnings,
+    gitlabAuth: auth,
+    gitlabHost: instanceHost(baseUrl),
     tokenEnv,
     gitlabTokenSet: Boolean(process.env[tokenEnv]),
     canStoreToken: settings.canStoreToken(),
@@ -85,6 +92,7 @@ export const openSession = async (
   return ok({
     info,
     deps,
+    gitlabAccess,
     busy,
     exclusive: async (slug, work) => {
       if (running.has(slug)) return err(`"${slug}" is already running. Stop it or wait for it to finish.`);

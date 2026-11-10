@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { STAGE_LABEL } from '../../../domain/epic.ts';
 import type { ConnectionInfo, WorkspaceInfo } from '../../shared/api.ts';
 import { needsHuman, visibleEpics, type State } from '../model.ts';
@@ -15,6 +16,7 @@ export const Sidebar = ({
   onSwitch,
   onSettings,
   onRepos,
+  notice,
 }: {
   state: State;
   workspace: WorkspaceInfo;
@@ -27,6 +29,8 @@ export const Sidebar = ({
   onSwitch: () => void;
   onSettings: () => void;
   onRepos: () => void;
+  /** Shown above the footer, for the app's own update. */
+  notice?: ReactNode;
 }) => {
   const epics = visibleEpics(state);
   const mineWaiting = state.epics.filter((e) => e.owner === workspace.actor && needsHuman(e)).length;
@@ -82,6 +86,7 @@ export const Sidebar = ({
           );
         })}
       </nav>
+      {notice}
       <div className="sidebar-footer">
         <span className="who" title="Who forge records as the actor (git config user.email)">
           {workspace.actor}

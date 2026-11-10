@@ -154,8 +154,9 @@ describe('desktop view model', () => {
 const fakeSession = (deps: Deps): Session => {
   const running = new Map<string, AbortController>();
   return {
-    info: { root: deps.workspaceRoot, name: 'ws', actor: deps.actor, repos: [], warnings: [], tokenEnv: 'GITLAB_TOKEN', gitlabTokenSet: false, canStoreToken: false },
+    info: { root: deps.workspaceRoot, name: 'ws', actor: deps.actor, repos: [], warnings: [], gitlabAuth: 'token', gitlabHost: 'gitlab.com', tokenEnv: 'GITLAB_TOKEN', gitlabTokenSet: false, canStoreToken: false },
     deps,
+    gitlabAccess: async () => ({ kind: 'no_token', host: 'gitlab.com', tokenEnv: 'GITLAB_TOKEN' }),
     busy: () => [...running.keys()],
     exclusive: async (slug, work) => {
       if (running.has(slug)) return { ok: false, error: `"${slug}" is already running.` };
@@ -311,7 +312,7 @@ describe('repo inspection', () => {
     assert.equal(parseRemote('not a url'), undefined);
   });
 
-  it('suggests project, branch, setup and checks from the folder, and flags a remote on another host', async () => {
+  it('suggests project, branch, setup and checks from the folder, and reports the remote host', async () => {
     const { inspectFolder } = await import('../src/desktop/main/inspect.ts');
     const dir = await tempDir();
     const ws = await makeRepo(dir, 'planning');
@@ -320,13 +321,22 @@ describe('repo inspection', () => {
       'package-lock.json': '{}',
     });
     sh(api.repo, 'remote', 'set-url', 'origin', 'git@github.com:Templo-Software/templo-backend.git');
-    const guess = await inspectFolder(api.repo, ws.repo, 'https://gitlab.com');
+    const guess = await inspectFolder(api.repo, ws.repo);
     assert.equal(guess.name, 'templo-backend');
     assert.equal(guess.path, '../Templo Backend');
     assert.equal(guess.project, 'Templo-Software/templo-backend');
     assert.deepEqual(guess.setup, ['npm ci']);
     assert.deepEqual(guess.checks, [{ name: 'test', run: 'npm test' }, { name: 'lint', run: 'npm run lint' }]);
-    assert.match(guess.warnings.join(), /remote is on github\.com, but forge opens merge requests on gitlab\.com/);
+    assert.equal(guess.remoteHost, 'github.com');
+  });
+
+  it('flags a remote that is not on the GitLab instance', async () => {
+    const { gitlabHostMismatch } = await import('../src/desktop/shared/gitlab.ts');
+    assert.match(gitlabHostMismatch('github.com', 'https://gitlab.com') ?? '', /remote is on github\.com, but forge opens merge requests on gitlab\.com/);
+    assert.equal(gitlabHostMismatch('gitlab.example.com', 'https://gitlab.example.com/'), undefined);
+    assert.equal(gitlabHostMismatch('gitlab.com', ''), undefined, 'empty means the default, gitlab.com');
+    assert.equal(gitlabHostMismatch('', 'https://gitlab.com'), undefined, 'no remote, nothing to compare');
+    assert.equal(gitlabHostMismatch('gitlab.com', 'not a url'), undefined);
   });
 });
 
@@ -355,8 +365,9 @@ describe('repo settings handlers', () => {
 
   it('lists repos, saves an added one, and reopens the workspace', async () => {
     const { dir, ws, dispatch, opened } = await withWorkspace();
-    const settings = (await dispatch('repoSettings', [])) as { repos: { name: string; present: boolean; resolved: string }[] };
+    const settings = (await dispatch('repoSettings', [])) as { gitlabBaseUrl: string; repos: { name: string; present: boolean; resolved: string }[] };
     assert.deepEqual(settings.repos.map((r) => [r.name, r.present]), [['api', true]]);
+    assert.equal(settings.gitlabBaseUrl, 'https://gitlab.com');
     const web = await makeRepo(dir, 'web');
     const edits = [
       { name: 'api', path: '../api', localPath: '', project: 'g/api', baseBranch: 'main', remote: 'origin', setup: [], checks: [{ name: 'test', run: 'true' }], revertCheck: 'test' },
@@ -367,6 +378,10 @@ describe('repo settings handlers', () => {
     assert.deepEqual(opened, [ws.repo]);
     assert.match(await readFile(join(ws.repo, '.forge', 'config.yaml'), 'utf8'), /web:\n {4}path: \.\.\/web/);
     assert.match(await readFile(join(ws.repo, '.forge', 'local.yaml'), 'utf8'), new RegExp(`path: ${web.repo}`));
+
+    const withUrl = (await dispatch('saveRepos', [edits, null, 'https://gitlab.example.com'])) as Outcome;
+    assert.ok(withUrl.ok, withUrl.text);
+    assert.equal(((await dispatch('repoSettings', [])) as { gitlabBaseUrl: string }).gitlabBaseUrl, 'https://gitlab.example.com');
   });
 
   it("refuses to remove a repo that unfinished changes still build in", async () => {

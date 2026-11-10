@@ -6,10 +6,11 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { readConfigFile, readLocalConfigFile, writeConfigFiles } from '../../adapters/fs.ts';
-import { applyRepoEdits, readRepoEdits, type RepoEdit } from '../../application/configEdit.ts';
+import { GITLAB_AUTH_MODES } from '../../application/config.ts';
+import { applyGitlabAuth, applyRepoEdits, readGitlabBaseUrl, readRepoEdits, type RepoEdit } from '../../application/configEdit.ts';
 import { expand, findRepoRoot } from '../../app/compose.ts';
 import { initWorkspaceFiles } from '../../app/init.ts';
-import { inspectFolder, listDirectory } from './inspect.ts';
+import { inspectFolder, listDirectory, remoteHostOf } from './inspect.ts';
 import { changeDiff } from '../../application/build.ts';
 import { changeIssues } from '../../application/changes.ts';
 import { loadEpic } from '../../application/deps.ts';
@@ -90,9 +91,11 @@ const ARGS = {
   sync: z.tuple([slug]),
   repoSettings: z.tuple([]),
   inspectRepo: z.tuple([z.string().max(4096).nullable(), z.string().max(4096).nullable()]),
-  saveRepos: z.tuple([z.array(repoEdit).max(50), z.string().max(4096).nullable()]),
+  saveRepos: z.tuple([z.array(repoEdit).max(50), z.string().max(4096).nullable(), z.string().trim().max(2048).nullable().optional()]),
   chooseNewWorkspace: z.tuple([]),
   setGitlabToken: z.tuple([z.string().trim().min(1).max(1000).nullable()]),
+  setGitlabAuth: z.tuple([z.enum(GITLAB_AUTH_MODES)]),
+  gitlabAccess: z.tuple([]),
   openExternal: z.tuple([z.string().max(2048).regex(/^https?:\/\//i, 'only http(s) links')]),
   busy: z.tuple([]),
   listDirectory: z.tuple([z.string().max(4096).nullable()]),
@@ -222,22 +225,27 @@ export const createHandlers = (ctx: HandlerContext) => {
       const sess = session();
       if (!sess) return null;
       const root = sess.info.root;
-      const edits = readRepoEdits(await readConfigFile(root), await readLocalConfigFile(root));
+      const configText = await readConfigFile(root);
+      const edits = readRepoEdits(configText, await readLocalConfigFile(root));
       const epics = await loadAll(sess.deps);
       return {
         root,
-        gitlabBaseUrl: sess.deps.config.gitlab.baseUrl,
-        repos: edits.map((e) => {
-          const resolved = expand(root, e.localPath || e.path);
-          return {
-            ...e,
-            resolved,
-            present: existsSync(join(resolved, '.git')),
-            inUse: epics.flatMap((ep) =>
-              ep.changes.filter((c) => c.spec?.repo === e.name && c.status !== 'merged' && c.status !== 'dropped').map((c) => `${ep.slug}/${c.id}`),
-            ),
-          };
-        }),
+        gitlabBaseUrl: readGitlabBaseUrl(configText),
+        repos: await Promise.all(
+          edits.map(async (e) => {
+            const resolved = expand(root, e.localPath || e.path);
+            const present = existsSync(join(resolved, '.git'));
+            return {
+              ...e,
+              resolved,
+              present,
+              remoteHost: present ? await remoteHostOf(resolved, e.remote) : '',
+              inUse: epics.flatMap((ep) =>
+                ep.changes.filter((c) => c.spec?.repo === e.name && c.status !== 'merged' && c.status !== 'dropped').map((c) => `${ep.slug}/${c.id}`),
+              ),
+            };
+          }),
+        ),
       };
     },
     inspectRepo: async (path, workspaceRoot) => {
@@ -245,9 +253,9 @@ export const createHandlers = (ctx: HandlerContext) => {
       if (!folder) return null;
       const root = workspaceRoot ?? session()?.info.root;
       if (!root) return null;
-      return inspectFolder(folder, root, session()?.deps.config.gitlab.baseUrl ?? 'https://gitlab.com');
+      return inspectFolder(folder, root);
     },
-    saveRepos: async (repos, newWorkspaceRoot) => {
+    saveRepos: async (repos, newWorkspaceRoot, gitlabBaseUrl) => {
       const sess = session();
       const root = newWorkspaceRoot ?? sess?.info.root;
       if (!root) return noWorkspace;
@@ -264,7 +272,7 @@ export const createHandlers = (ctx: HandlerContext) => {
         if (blocked.length) return { ok: false, text: `Can't remove a repo with unfinished changes: ${blocked.join(', ')}. Finish or drop them first.`, tone: 'error' };
       }
 
-      const files = applyRepoEdits(configText, await readLocalConfigFile(root), repos as readonly RepoEdit[]);
+      const files = applyRepoEdits(configText, await readLocalConfigFile(root), repos as readonly RepoEdit[], gitlabBaseUrl ?? undefined);
       if (!files.ok) return { ok: false, text: files.error.join(' · '), tone: 'error' };
       if (creating) await initWorkspaceFiles(root, files.value.config);
       await writeConfigFiles(root, files.value);
@@ -298,6 +306,19 @@ export const createHandlers = (ctx: HandlerContext) => {
       await ctx.open(sess.info.root);
       return { ok: true, text: token ? 'GitLab token saved in the OS keychain.' : 'GitLab token removed.', tone: 'success' };
     },
+    setGitlabAuth: async (auth) => {
+      const sess = session();
+      if (!sess) return noWorkspace;
+      if (sess.busy().length) return { ok: false, text: 'Agents are running. Change how forge signs in to GitLab when they finish.', tone: 'error' };
+      const root = sess.info.root;
+      const files = applyGitlabAuth(await readConfigFile(root), await readLocalConfigFile(root), auth);
+      if (!files.ok) return { ok: false, text: files.error.join(' · '), tone: 'error' };
+      await writeConfigFiles(root, files.value);
+      const opened = await ctx.open(root);
+      if (opened.error) return { ok: false, text: opened.error, tone: 'error' };
+      return { ok: true, text: auth === 'glab' ? 'Forge now signs in to GitLab with the glab login.' : 'Forge now signs in to GitLab with a token.', tone: 'success' };
+    },
+    gitlabAccess: async () => (await session()?.gitlabAccess()) ?? null,
     openExternal: async (url) => {
       // Only web links (MR URLs). Never file:, javascript: or custom schemes.
       if (/^https?:\/\//i.test(url)) await ctx.openExternal(url);

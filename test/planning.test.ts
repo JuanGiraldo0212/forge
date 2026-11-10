@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { optionsFor } from '../src/adapters/claudeAgent.ts';
+import { credentialPaths, optionsFor } from '../src/adapters/claudeAgent.ts';
 import { fsRepoContext } from '../src/adapters/fs.ts';
 import { preparePlanning } from '../src/application/planning.ts';
 import { makeDeps, makeRepo, scriptedAgent, sh, tempDir } from './helpers.ts';
@@ -81,10 +81,26 @@ describe('repo instructions', () => {
   it('turns denied paths into Read deny rules for both agent modes', () => {
     const base = { epic: 'e', label: 'x', cwd: '/w', model: 'm', systemPrompt: '', prompt: '', maxTurns: 1, denyRead: ['/w/epics/**/events.jsonl'] };
     const read = optionsFor({ ...base, mode: 'read' }, { effort: 'high', allowedDomains: [], withheldEnv: [] }, new AbortController());
-    assert.deepEqual(read.disallowedTools, ['Read(//w/epics/**/events.jsonl)']);
+    assert.ok(read.disallowedTools?.includes('Read(//w/epics/**/events.jsonl)'));
     const build = optionsFor({ ...base, mode: 'build' }, { effort: 'high', allowedDomains: [], withheldEnv: [] }, new AbortController());
     assert.ok(build.disallowedTools?.includes('Read(//w/epics/**/events.jsonl)'));
     assert.ok(build.disallowedTools?.includes('Bash(git push:*)'));
+  });
+
+  it("keeps every agent out of credential folders, glab's login included, with Read rules and the Bash sandbox", () => {
+    const base = { epic: 'e', label: 'x', cwd: '/w', model: 'm', systemPrompt: '', prompt: '', maxTurns: 1 };
+    const opts = { effort: 'high' as const, allowedDomains: [], withheldEnv: [] };
+    for (const mode of ['read', 'build'] as const) {
+      const rules = optionsFor({ ...base, mode }, opts, new AbortController()).disallowedTools ?? [];
+      for (const rule of ['Read(~/.ssh/**)', 'Read(~/.netrc)', 'Read(~/.config/glab-cli/**)', 'Read(~/Library/Application Support/glab-cli/**)', 'Read(~/snap/glab/**)'])
+        assert.ok(rules.includes(rule), `${mode} agents: ${rule}`);
+    }
+    const build = optionsFor({ ...base, mode: 'build' }, opts, new AbortController());
+    assert.ok(build.sandbox?.filesystem?.denyRead?.includes('~/.config/glab-cli'));
+
+    const paths = credentialPaths({ GLAB_CONFIG_DIR: '/etc/glab', XDG_CONFIG_HOME: '/home/u/.xdg' });
+    assert.ok(paths.includes('/etc/glab'), 'GLAB_CONFIG_DIR');
+    assert.ok(paths.includes(join('/home/u/.xdg', 'glab-cli')), 'XDG_CONFIG_HOME');
   });
 
   it("makes a build agent's additional directories read-only", () => {
@@ -95,6 +111,7 @@ describe('repo instructions', () => {
     assert.ok(build.disallowedTools?.includes('Edit(//snap/api/**)'));
     assert.ok(build.disallowedTools?.includes('Write(//snap/api/**)'));
     assert.deepEqual(build.sandbox?.filesystem?.allowWrite, ['/wt'], 'Bash can only write the worktree');
-    assert.deepEqual(optionsFor({ ...base, mode: 'read' }, opts, new AbortController()).disallowedTools, [], 'read agents have no edit tools to deny');
+    const readRules = optionsFor({ ...base, mode: 'read' }, opts, new AbortController()).disallowedTools ?? [];
+    assert.deepEqual(readRules.filter((rule) => !rule.startsWith('Read(')), [], 'read agents have no edit tools to deny');
   });
 });

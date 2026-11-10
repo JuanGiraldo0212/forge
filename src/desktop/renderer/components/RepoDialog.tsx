@@ -4,12 +4,14 @@
  */
 import { useEffect, useState } from 'react';
 import type { Outcome, RepoEdit, RepoGuess } from '../../shared/api.ts';
+import { DEFAULT_GITLAB_URL, gitlabHostMismatch } from '../../shared/gitlab.ts';
 import { Button, Chip } from './ui.tsx';
 
 type Card = RepoEdit & {
   readonly key: number;
   readonly resolved?: string;
   readonly present?: boolean;
+  readonly remoteHost?: string;
   readonly inUse: readonly string[];
   readonly warnings: readonly string[];
 };
@@ -29,11 +31,12 @@ const fromGuess = (g: RepoGuess): Card => ({
   revertCheck: g.checks[0]?.name ?? 'test',
   resolved: g.root,
   present: g.isGit,
+  remoteHost: g.remoteHost,
   inUse: [],
   warnings: g.warnings,
 });
 
-const toEdit = ({ key: _k, resolved: _r, present: _p, inUse: _i, warnings: _w, ...edit }: Card): RepoEdit => edit;
+const toEdit = ({ key: _k, resolved: _r, present: _p, remoteHost: _h, inUse: _i, warnings: _w, ...edit }: Card): RepoEdit => edit;
 
 const Field = ({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) => (
   <label className="field">
@@ -45,15 +48,20 @@ const Field = ({ label, hint, children }: { label: string; hint?: string; childr
 
 const RepoCard = ({
   card,
+  gitlabUrl,
   onChange,
   onRemove,
   onBrowse,
+  onUseGitlabHost,
 }: {
   card: Card;
+  gitlabUrl: string;
   onChange: (c: Card) => void;
   onRemove: () => void;
   onBrowse: (target: 'shared' | 'local') => void;
+  onUseGitlabHost: (host: string) => void;
 }) => {
+  const mismatch = gitlabHostMismatch(card.remoteHost ?? '', gitlabUrl);
   const set = <K extends keyof Card>(k: K, v: Card[K]) => onChange({ ...card, [k]: v });
   const checkNames = card.checks.map((c) => c.name).filter(Boolean);
   return (
@@ -73,6 +81,14 @@ const RepoCard = ({
           {w}
         </div>
       ))}
+      {mismatch && (
+        <div className="banner banner-info small banner-with-action">
+          <span>{mismatch}</span>
+          <Button kind="secondary" onClick={() => onUseGitlabHost(card.remoteHost!)}>
+            Use https://{card.remoteHost}
+          </Button>
+        </div>
+      )}
       <div className="repo-grid">
         <Field label="Path (shared)" hint="Relative to the planning repo; the team's convention, e.g. ../templo-backend.">
           <span className="with-button">
@@ -131,14 +147,16 @@ const RepoCard = ({
 
 export const RepoDialog = ({ setupRoot, onClose, onSaved }: { setupRoot: string | null; onClose: () => void; onSaved: (o: Outcome) => Promise<void> }) => {
   const [cards, setCards] = useState<Card[] | undefined>(setupRoot ? [] : undefined);
+  const [gitlabUrl, setGitlabUrl] = useState(DEFAULT_GITLAB_URL);
   const [error, setError] = useState<string | undefined>();
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (setupRoot) return;
-    void window.forge.repoSettings().then((s) =>
-      setCards((s?.repos ?? []).map((r) => ({ ...r, key: nextKey++, warnings: [] }))),
-    );
+    void window.forge.repoSettings().then((s) => {
+      setCards((s?.repos ?? []).map((r) => ({ ...r, key: nextKey++, warnings: [] })));
+      if (s) setGitlabUrl(s.gitlabBaseUrl);
+    });
   }, [setupRoot]);
 
   const add = async () => {
@@ -159,6 +177,7 @@ export const RepoDialog = ({ setupRoot, onClose, onSaved }: { setupRoot: string 
               project: c.project || guess.project,
               resolved: guess.root,
               present: guess.isGit,
+              remoteHost: guess.remoteHost,
               warnings: guess.warnings,
             },
       ),
@@ -170,7 +189,7 @@ export const RepoDialog = ({ setupRoot, onClose, onSaved }: { setupRoot: string 
     setSaving(true);
     setError(undefined);
     const cleaned = cards.map((c) => toEdit({ ...c, setup: c.setup.map((s) => s.trim()).filter(Boolean) }));
-    const outcome = await window.forge.saveRepos(cleaned, setupRoot);
+    const outcome = await window.forge.saveRepos(cleaned, setupRoot, gitlabUrl);
     setSaving(false);
     if (!outcome.ok) return setError(outcome.text);
     await onSaved(outcome);
@@ -191,6 +210,9 @@ export const RepoDialog = ({ setupRoot, onClose, onSaved }: { setupRoot: string 
             </>
           )}
         </p>
+        <Field label="GitLab URL" hint="The GitLab instance your repos live on; forge pushes branches and opens merge requests there.">
+          <input value={gitlabUrl} onChange={(e) => setGitlabUrl(e.target.value)} placeholder={DEFAULT_GITLAB_URL} aria-label="GitLab URL" />
+        </Field>
         {!cards && <p className="muted">Loading…</p>}
         {cards?.length === 0 && <p className="empty">No repositories yet. Add the clones of your code repos.</p>}
         {cards?.map((card) => (
@@ -199,7 +221,9 @@ export const RepoDialog = ({ setupRoot, onClose, onSaved }: { setupRoot: string 
             card={card}
             onChange={(next) => setCards((cs) => (cs ?? []).map((c) => (c.key === card.key ? next : c)))}
             onRemove={() => setCards((cs) => (cs ?? []).filter((c) => c.key !== card.key))}
+            gitlabUrl={gitlabUrl}
             onBrowse={(target) => void browse(card.key, target)}
+            onUseGitlabHost={(host) => setGitlabUrl(`https://${host}`)}
           />
         ))}
         {error && <div className="banner banner-bad">{error}</div>}

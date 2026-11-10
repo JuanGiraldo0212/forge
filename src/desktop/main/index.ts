@@ -4,18 +4,21 @@
  * the validated ForgeApi.
  */
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, session as electronSession, shell } from 'electron';
+import { existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startRemote } from '../remote/client.ts';
-import { channel, CONNECTION_METHODS, EVENTS, METHODS } from '../shared/api.ts';
+import { channel, CONNECTION_METHODS, EVENTS, METHODS, UPDATE_METHODS, type ConnectionMethod, type Method, type UpdateMethod } from '../shared/api.ts';
 import { workspaceBackend } from './backend.ts';
 import { runCaptureScript } from './capture.ts';
 import { connectionManager } from './connection.ts';
+import { electronUpdaterAdapter } from './electronUpdater.ts';
 import { loadServerBundle } from './serverBundle.ts';
 import { fileSettings } from './settings.ts';
 import { fixPath } from './shellEnv.ts';
+import { installsInPlace, noUpdater, updateController, updatesOffReason } from './updates.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 
@@ -76,13 +79,75 @@ const connections = connectionManager({
   log: (line) => console.warn(line),
 });
 
-for (const method of [...METHODS, ...CONNECTION_METHODS]) {
-  ipcMain.handle(channel(method), (event, ...args: unknown[]) => {
-    // Only our own window may call in.
-    if (event.sender !== window?.webContents) throw new Error('Unknown sender');
-    return connections.dispatch(method, args);
+const RELEASES = 'https://github.com/JuanGiraldo0212/forge/releases';
+const FIRST_UPDATE_CHECK_MS = 15_000;
+const UPDATE_CHECK_EVERY_MS = 4 * 60 * 60 * 1000;
+
+const packageType = (): string | undefined => {
+  try {
+    return readFileSync(join(process.resourcesPath, 'package-type'), 'utf8').trim();
+  } catch {
+    return undefined;
+  }
+};
+
+const updateOffReason = updatesOffReason({
+  packaged: app.isPackaged,
+  platform: process.platform,
+  appImage: process.env.APPIMAGE,
+  debPackage: app.isPackaged && packageType() === 'deb',
+  feedConfigured: existsSync(join(process.resourcesPath, 'app-update.yml')),
+  disabledByEnv: Boolean(process.env.FORGE_DISABLE_AUTO_UPDATE),
+});
+const installs = installsInPlace(process.platform);
+
+/** Agents run in this process or on the connected host: quitting or restarting stops them, so ask first. */
+const agentsMayStop = (action: 'quit' | 'restart'): boolean => {
+  const busy = connections.busy();
+  if (busy.length === 0 || process.env.FORGE_DESKTOP_CAPTURE) return true;
+  const where = connections.connection();
+  const choice = dialog.showMessageBoxSync(window!, {
+    type: 'warning',
+    buttons: ['Keep running', `Stop agents and ${action}`],
+    defaultId: 0,
+    cancelId: 0,
+    message: `Agents are running on ${busy.join(', ')}${where.kind === 'remote' ? ` (on ${where.label})` : ''}.`,
+    detail: `${action === 'quit' ? 'Quitting' : 'Restarting'} stops them. Interrupted changes are handed back to you the next time you run them.`,
   });
-}
+  return choice === 1;
+};
+
+/** Set once the user agreed to quit (or restart to update), so before-quit doesn't ask again. */
+let quitting = false;
+
+const updates = updateController({
+  version: app.getVersion(),
+  offReason: updateOffReason,
+  installs,
+  releaseUrl: (version) => `${RELEASES}/tag/v${version}`,
+  updater: updateOffReason ? noUpdater : electronUpdaterAdapter({ installs }),
+  now: () => new Date().toISOString(),
+  publish: (view) => send(EVENTS.updateState, view),
+  allowRestart: () => {
+    if (!agentsMayStop('restart')) return false;
+    quitting = true;
+    return true;
+  },
+  restartFailed: () => {
+    quitting = false;
+  },
+});
+
+/** Only our own window may call in. */
+const handle = (method: Method | ConnectionMethod | UpdateMethod, run: (args: unknown[]) => Promise<unknown>): void => {
+  ipcMain.handle(channel(method), (event, ...args: unknown[]) => {
+    if (event.sender !== window?.webContents) throw new Error('Unknown sender');
+    return run(args);
+  });
+};
+
+for (const method of [...METHODS, ...CONNECTION_METHODS]) handle(method, (args) => connections.dispatch(method, args));
+for (const method of UPDATE_METHODS) handle(method, () => updates.dispatch(method));
 
 const createWindow = () => {
   window = new BrowserWindow({
@@ -117,27 +182,16 @@ const createWindow = () => {
   else void window.loadFile(join(here, '../renderer/index.html'));
 };
 
-/** Agents run in this process: quitting stops them, so ask first. */
-let quitting = false;
 app.on('before-quit', (e) => {
-  const busy = connections.busy();
-  if (quitting || busy.length === 0 || process.env.FORGE_DESKTOP_CAPTURE) return;
-  const where = connections.connection();
-  e.preventDefault();
-  const choice = dialog.showMessageBoxSync(window!, {
-    type: 'warning',
-    buttons: ['Keep running', 'Stop agents and quit'],
-    defaultId: 0,
-    cancelId: 0,
-    message: `Agents are running on ${busy.join(', ')}${where.kind === 'remote' ? ` (on ${where.label})` : ''}.`,
-    detail: 'Quitting stops them. Interrupted changes are handed back to you the next time you run them.',
-  });
-  if (choice === 1) {
-    quitting = true;
-    connections.close();
-    app.quit();
+  if (quitting) return;
+  if (!agentsMayStop('quit')) {
+    e.preventDefault();
+    return;
   }
+  quitting = true;
 });
+
+app.on('will-quit', () => connections.close());
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin' || process.env.FORGE_DESKTOP_CAPTURE) app.quit();
@@ -167,6 +221,9 @@ app.whenReady().then(async () => {
 
   createWindow();
   if (process.env.FORGE_DESKTOP_CAPTURE && window) void runCaptureScript(window, process.env.FORGE_DESKTOP_CAPTURE).finally(() => app.exit(0));
+
+  setTimeout(() => void updates.check(), FIRST_UPDATE_CHECK_MS);
+  setInterval(() => void updates.check(), UPDATE_CHECK_EVERY_MS);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
