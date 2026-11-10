@@ -252,7 +252,7 @@ describe('multi-repo epic', () => {
 });
 
 describe('change specs stage', () => {
-  const setup = async (script: Script) => {
+  const setup = async (script: Script, config?: Record<string, unknown>) => {
     const dir = await tempDir();
     const app = await makeRepo(dir, 'app');
     const calls: AgentRequest[] = [];
@@ -264,13 +264,14 @@ describe('change specs stage', () => {
       if (stageOf(req) === 'review') return { structured: { findings: [] } };
       return undefined;
     };
-    const { deps } = await makeDeps({
+    const { deps, hosts } = await makeDeps({
       workspace: app.repo,
       worktrees: join(dir, 'worktrees'),
       agent: scriptedAgent(calls, wrapped),
       repos: [{ name: 'app', dir: app.repo, checks: [{ name: 'test', run: 'node test/add.test.mjs' }] }],
+      config,
     });
-    return { deps, calls };
+    return { deps, calls, host: hosts.app!, app };
   };
 
   const ADD_TEST = `import assert from 'node:assert/strict';\nimport { add } from '../src/add.mjs';\nassert.equal(add(2, 3), 5);\n`;
@@ -377,6 +378,94 @@ describe('change specs stage', () => {
     assert.equal(calls.at(-1)!.resume, c1.sessionId, 'resumed the same agent session');
     assert.match(calls[before]!.prompt, /add, not subtract/);
     assert.equal((await epicOf(deps, slug)).costUsd.toFixed(4), (calls.length * CALL_COST).toFixed(4));
+  });
+
+  it('posts the review on the MR, inline where a finding points, once per review', async () => {
+    let builds = 0;
+    let reviews = 0;
+    const { deps, host, app } = await setup(async (req) => {
+      if (stageOf(req) === 'change specs') return oneChange;
+      if (req.mode === 'build') {
+        builds++;
+        await writeAdd(req.cwd, builds === 1 ? 'a + b' : '(a + b)', ADD_TEST);
+        return { text: 'ok' };
+      }
+      if (stageOf(req) === 'review') {
+        reviews++;
+        if (reviews > 1) return { structured: { findings: [] } };
+        return {
+          structured: {
+            findings: [
+              { severity: 'advisory', summary: 'Name the operation', file: 'src/add.mjs', line: 1, detail: 'A comment would help.' },
+              { severity: 'advisory', summary: 'Consider a changelog entry' },
+            ],
+          },
+        };
+      }
+      return undefined;
+    });
+    const slug = await throughEpicSpec(deps);
+    await run(deps, slug);
+    await startDevelopment(deps, slug);
+    await run(deps, slug);
+    assert.equal(host.commented.length, 0, 'nothing is posted before there is an MR');
+
+    const approved = await approveChange(deps, slug, 'C1', undefined);
+    assert.ok(approved.ok && approved.value.kind === 'code' && approved.value.outcome.result === 'mr_open', JSON.stringify(approved));
+    const branch = `origin/forge/${slug}/C1`;
+    sh(app.repo, 'fetch', '-q', 'origin');
+    const first = host.commented[0]!;
+    assert.equal(host.commented.length, 1);
+    assert.equal(first.iid, 1);
+    assert.equal(first.headSha, sh(app.repo, 'rev-parse', branch), 'comments target the pushed commit');
+    assert.deepEqual(
+      first.comments.map((c) => [c.file, c.line]),
+      [['src/add.mjs', 1], [undefined, undefined]],
+    );
+    assert.match(first.comments[0]!.body, /^\*\*Advisory\*\*: Name the operation\n\nA comment would help\./);
+    let e = await epicOf(deps, slug);
+    assert.equal(e.changes[0]!.reviewPosted, true);
+    const posted = (await deps.epics.load(slug)).find((ev) => ev.type === 'ReviewCommentsPosted');
+    assert.ok(posted?.type === 'ReviewCommentsPosted' && posted.inline === 1 && posted.general === 1);
+
+    // Another run does not post the same review again.
+    await run(deps, slug);
+    assert.equal(host.commented.length, 1);
+
+    // A rework updates the same MR, and its new (clean) review is posted there.
+    assert.ok((await reviseChange(deps, slug, 'C1', 'wrap it in parentheses')).ok);
+    await run(deps, slug);
+    assert.ok((await approveChange(deps, slug, 'C1', undefined)).ok);
+    sh(app.repo, 'fetch', '-q', 'origin');
+    assert.equal(host.opened.length, 1, 'the open MR is reused');
+    assert.equal(host.commented.length, 2);
+    assert.equal(host.commented[1]!.headSha, sh(app.repo, 'rev-parse', branch));
+    assert.notEqual(host.commented[1]!.headSha, first.headSha);
+    assert.match(host.commented[1]!.comments[0]!.body, /no findings/);
+    e = await epicOf(deps, slug);
+    assert.equal(e.changes[0]!.reviewPosted, true);
+  });
+
+  it('keeps the review off the MR when posting is turned off', async () => {
+    const { deps, host } = await setup(
+      async (req) => {
+        if (stageOf(req) === 'change specs') return oneChange;
+        if (req.mode === 'build') {
+          await writeAdd(req.cwd, 'a + b', ADD_TEST);
+          return { text: 'ok' };
+        }
+        if (stageOf(req) === 'review') return { structured: { findings: [{ severity: 'advisory', summary: 'nit', file: 'src/add.mjs', line: 1 }] } };
+        return undefined;
+      },
+      { review: { postToMergeRequest: false } },
+    );
+    const slug = await throughEpicSpec(deps);
+    await run(deps, slug);
+    await startDevelopment(deps, slug);
+    await run(deps, slug);
+    assert.ok((await approveChange(deps, slug, 'C1', undefined)).ok);
+    assert.equal(host.opened.length, 1);
+    assert.equal(host.commented.length, 0);
   });
 
   it('rejects tests that pass without the change (revert test)', async () => {

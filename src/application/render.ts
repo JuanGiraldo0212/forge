@@ -30,6 +30,12 @@ ${change.findings.length ? change.findings.map(findingLine).join('\n') : 'No fin
 Opened by Forge after human approval. Merging is a human decision.
 `;
 
+/** One review finding as an MR comment. Where it points goes in the comment's position, not its text. */
+export const findingComment = (f: Finding, commit: string): string =>
+  `**${f.severity === 'blocking' ? 'Blocking' : 'Advisory'}**: ${f.summary}${f.detail ? `\n\n${f.detail}` : ''}\n\n<sub>Forge automated review of ${commit.slice(0, 8)}</sub>`;
+
+export const cleanReviewComment = (commit: string): string => `Forge automated review of ${commit.slice(0, 8)}: no findings.`;
+
 export const describeEvent = (e: EpicEvent): string => {
   switch (e.type) {
     case 'EpicCreated':
@@ -78,6 +84,8 @@ export const describeEvent = (e: EpicEvent): string => {
       return `asked to rework ${e.changeId}: ${e.note}`;
     case 'MergeRequestOpened':
       return `${e.changeId} MR !${e.iid} ${e.url}`;
+    case 'ReviewCommentsPosted':
+      return `${e.changeId} review posted to MR !${e.iid} (${e.inline} inline, ${e.general} general)`;
     case 'ChangeMerged':
       return `${e.changeId} merged`;
     case 'EpicAbandoned':

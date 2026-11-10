@@ -12,7 +12,7 @@ import { shellCheckRunner } from '../src/adapters/process.ts';
 import { parseConfig } from '../src/application/config.ts';
 import type { Deps, RepoDeps } from '../src/application/deps.ts';
 import { err, ok, type Result } from '../src/domain/result.ts';
-import type { AgentOutcome, AgentRequest, AgentRunner, CodeHost } from '../src/ports/index.ts';
+import type { AgentOutcome, AgentRequest, AgentRunner, CodeHost, MergeRequestComment } from '../src/ports/index.ts';
 
 /** Each agent call really spends this much. */
 export const CALL_COST = 0.01;
@@ -38,12 +38,27 @@ export const makeRepo = async (dir: string, name: string, files: Record<string, 
   return { repo, remote };
 };
 
-export const fakeGitLab = (project: string): CodeHost & { readonly opened: { title: string; description: string; sourceBranch: string }[]; readonly merged: Set<number> } => {
+export type PostedReview = { readonly iid: number; readonly headSha: string; readonly comments: readonly MergeRequestComment[] };
+
+export const fakeGitLab = (
+  project: string,
+): CodeHost & {
+  readonly opened: { title: string; description: string; sourceBranch: string }[];
+  readonly merged: Set<number>;
+  readonly commented: PostedReview[];
+} => {
   const opened: { title: string; description: string; sourceBranch: string }[] = [];
   const merged = new Set<number>();
+  const commented: PostedReview[] = [];
   return {
     opened,
     merged,
+    commented,
+    commentOnMergeRequest: async (iid, headSha, comments) => {
+      commented.push({ iid, headSha, comments });
+      const inline = comments.filter((c) => c.file && c.line).length;
+      return { inline, general: comments.length - inline, failed: [] };
+    },
     openMergeRequest: async (mr) => {
       opened.push(mr);
       return ok({ iid: opened.length, url: `https://gitlab.example/${project}/-/merge_requests/${opened.length}` });
@@ -119,8 +134,10 @@ export const makeDeps = async (opts: {
   readonly worktrees: string;
   readonly agent: AgentRunner;
   readonly actor?: string;
+  readonly config?: Record<string, unknown>;
 }) => {
   const config = parseConfig({
+    ...opts.config,
     worktreeRoot: opts.worktrees,
     loop: { maxRounds: 6, maxIdenticalFailures: 3 },
     changes: { maxFilesPerChange: 4 },

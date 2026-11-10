@@ -135,6 +135,8 @@ export type ChangeState = {
   readonly commit?: string;
   readonly revertTest?: 'passed' | 'skipped';
   readonly mergeRequest?: MergeRequestRef;
+  /** The latest review's findings are on the MR as comments. Reset by every new review. */
+  readonly reviewPosted?: boolean;
 };
 
 export type Note = {
@@ -253,6 +255,7 @@ type EventBody =
   | ({ readonly type: 'ChangeApproved'; readonly note?: string } & ChangeRef)
   | ({ readonly type: 'ChangeReworkRequested'; readonly note: string } & ChangeRef)
   | ({ readonly type: 'MergeRequestOpened'; readonly iid: number; readonly url: string } & ChangeRef)
+  | ({ readonly type: 'ReviewCommentsPosted'; readonly iid: number; readonly inline: number; readonly general: number } & ChangeRef)
   | ({ readonly type: 'ChangeMerged' } & ChangeRef)
   | { readonly type: 'EpicAbandoned'; readonly note: string };
 
@@ -480,6 +483,7 @@ const applyEvent = (e: Epic, ev: EpicEvent): Epic => {
       return updateChange(addCost(e, ev.costUsd), ev.changeId, (c) => ({
         ...c,
         findings: ev.findings,
+        reviewPosted: false,
         status: ev.gateRequired ? 'awaiting_review' : 'approved',
       }));
     case 'ChangeApproved': {
@@ -501,6 +505,8 @@ const applyEvent = (e: Epic, ev: EpicEvent): Epic => {
       );
     case 'MergeRequestOpened':
       return updateChange(e, ev.changeId, (c) => ({ ...c, status: 'mr_open', mergeRequest: { iid: ev.iid, url: ev.url } }));
+    case 'ReviewCommentsPosted':
+      return updateChange(e, ev.changeId, (c) => ({ ...c, reviewPosted: true }));
     case 'ChangeMerged': {
       const next = updateChange(e, ev.changeId, (c) => ({ ...c, status: 'merged' }));
       return finished(next.changes) ? { ...next, stage: 'done' } : next;

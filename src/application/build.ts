@@ -22,7 +22,7 @@ import {
   systemPrompt,
   type DependencyCode,
 } from './prompts.ts';
-import { mergeRequestDescription } from './render.ts';
+import { cleanReviewComment, findingComment, mergeRequestDescription } from './render.ts';
 
 export type ChangeOutcome = {
   readonly changeId: string;
@@ -328,7 +328,42 @@ const openMergeRequest = async (deps: Deps, epic: Epic, change: ChangeState): Pr
       });
   if (!mr.ok) return fail(`could not open MR: ${mr.error.message}`);
   await emitAsForge(deps, epic.slug, [{ type: 'MergeRequestOpened', changeId: change.id, iid: mr.value.iid, url: mr.value.url }]);
+  await postReview(deps, epic.slug, repo.value, wt.value, change, mr.value.iid, Boolean(reuse));
   return { changeId: change.id, result: 'mr_open', detail: mr.value.url };
+};
+
+/**
+ * Puts the latest review's findings on the MR as comments, once per review: a retried push or a reused MR
+ * never posts the same review twice, and a rework's new review lands on the MR it updates.
+ * Commenting is best effort; it never fails the MR.
+ */
+const postReview = async (
+  deps: Deps,
+  slug: string,
+  repo: RepoDeps,
+  wt: Worktree,
+  change: ChangeState,
+  iid: number,
+  rework: boolean,
+): Promise<void> => {
+  if (!deps.config.review.postToMergeRequest || change.reviewPosted) return;
+  // A new MR's description already says "No findings"; after a rework, say the new commit came back clean.
+  if (change.findings.length === 0 && !rework) return;
+  const head = await repo.vcs.head(wt);
+  if (!head.ok) {
+    deps.log.warn(`[${change.id}] review not posted to MR !${iid}: ${head.error.message}`);
+    return;
+  }
+  const comments = change.findings.length
+    ? change.findings.map((f) => ({ body: findingComment(f, head.value), file: f.file, line: f.line }))
+    : [{ body: cleanReviewComment(head.value) }];
+  const posted = await repo.host.commentOnMergeRequest(iid, head.value, comments);
+  if (posted.failed.length)
+    deps.log.warn(`[${change.id}] ${posted.failed.length} of ${comments.length} review comments not posted to MR !${iid}: ${posted.failed[0]}`);
+  if (posted.inline + posted.general > 0)
+    await emitAsForge(deps, slug, [
+      { type: 'ReviewCommentsPosted', changeId: change.id, iid, inline: posted.inline, general: posted.general },
+    ]);
 };
 
 const idleReason = (changes: readonly ChangeState[]): string => {

@@ -128,6 +128,17 @@ export type MergeRequestState = {
   readonly url: string;
 };
 
+/** A comment on an MR. With `file` and `line` it goes on that line of the diff when the host can place it there. */
+export type MergeRequestComment = { readonly body: string; readonly file?: string; readonly line?: number };
+
+export type PostedComments = {
+  /** Placed on a line of the diff. */
+  readonly inline: number;
+  /** Posted as general MR notes (no location, or the line is not part of the diff). */
+  readonly general: number;
+  readonly failed: readonly string[];
+};
+
 export type CodeHost = {
   readonly openMergeRequest: (mr: {
     readonly sourceBranch: string;
@@ -136,6 +147,15 @@ export type CodeHost = {
     readonly description: string;
   }) => Promise<Result<{ readonly iid: number; readonly url: string }, PortError>>;
   readonly getMergeRequest: (iid: number) => Promise<Result<MergeRequestState, PortError>>;
+  /**
+   * Posts comments on the MR as of `headSha` (the commit just pushed), so inline comments land on the
+   * diff the reviewer actually saw. Never fails as a whole: comments that could not be posted are listed.
+   */
+  readonly commentOnMergeRequest: (
+    iid: number,
+    headSha: string,
+    comments: readonly MergeRequestComment[],
+  ) => Promise<PostedComments>;
 };
 
 export type Check = { readonly name: string; readonly run: string };
