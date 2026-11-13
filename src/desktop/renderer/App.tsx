@@ -238,6 +238,7 @@ export const App = () => {
               onView={(stage) => dispatch({ type: 'view', view: stage })}
               onAction={(a) => void perform(a)}
               onAssign={() => void perform({ id: 'assign', label: '', kind: 'secondary' })}
+              onOpenUrl={(u) => void api().openExternal(u)}
             />
             <div className={`epic-body${showChanges ? ' with-changes' : ''}${chatOpen ? ' with-chat' : ''}`}>
               {showChanges && <ChangeList epic={epic} selected={change?.id} onSelect={(id) => dispatch({ type: 'select-change', changeId: id })} />}
@@ -245,6 +246,7 @@ export const App = () => {
                 {showChanges && change && (
                   <ChangeBar
                     change={change}
+                    specMergeRequest={epic.changeSpecMergeRequests?.[change.id]}
                     stage={epic.stage}
                     readOnly={view !== stageView(epic)}
                     busy={busy}

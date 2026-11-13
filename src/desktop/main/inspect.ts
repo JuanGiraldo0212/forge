@@ -6,6 +6,7 @@ import { existsSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
+import { parseRemote } from '../../adapters/git.ts';
 import { exec } from '../../adapters/process.ts';
 import type { CheckEdit } from '../../application/configEdit.ts';
 
@@ -25,14 +26,7 @@ export type RepoGuess = {
   readonly warnings: readonly string[];
 };
 
-/** "git@host:group/sub/proj.git", "ssh://git@host:2222/group/proj.git", "https://host/group/proj" → host + project path. */
-export const parseRemote = (url: string): { readonly host: string; readonly project: string } | undefined => {
-  const u = url.trim();
-  const scp = u.match(/^[^@/\s]+@([^:/\s]+):(?!\/)(.+?)(?:\.git)?\/?$/);
-  if (scp) return { host: scp[1]!, project: scp[2]! };
-  const full = u.match(/^(?:ssh|https?|git):\/\/(?:[^@/]+@)?([^:/]+)(?::\d+)?\/(.+?)(?:\.git)?\/?$/);
-  return full ? { host: full[1]!, project: full[2]! } : undefined;
-};
+export { parseRemote };
 
 export const repoName = (folder: string): string =>
   basename(folder)

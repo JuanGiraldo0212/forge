@@ -3,16 +3,16 @@
  */
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, isAbsolute, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { claudeAgentRunner } from '../adapters/claudeAgent.ts';
 import { fsArtifactStore, fsEpicStore, fsRepoContext, readConfigFile, readLocalConfigFile } from '../adapters/fs.ts';
-import { gitVcs } from '../adapters/git.ts';
+import { gitVcs, parseRemote } from '../adapters/git.ts';
 import { glabAccess, glabCodeHost, glabRunner, type GlabRun } from '../adapters/glab.ts';
 import { gitlabCodeHost, instanceHost, tokenAccess } from '../adapters/gitlab.ts';
 import { exec, shellCheckRunner } from '../adapters/process.ts';
-import { applyLocal, parseConfig, type GitlabAuth } from '../application/config.ts';
-import type { Deps, RepoDeps } from '../application/deps.ts';
+import { applyLocal, parseConfig, type Config, type GitlabAuth } from '../application/config.ts';
+import type { Deps, RepoDeps, WorkspaceRepoDeps } from '../application/deps.ts';
 import { err, ok, type Result } from '../domain/result.ts';
 import type { CodeHost, GitlabAccess, Logger } from '../ports/index.ts';
 
@@ -53,6 +53,40 @@ const parseYamlFile = (raw: string | undefined, name: string): Result<unknown, s
   } catch (e) {
     return err(`${name} is not valid YAML: ${(e as Error).message}`);
   }
+};
+
+/**
+ * The workspace repo for spec MRs: its GitLab project and base branch come from the config, or else from its
+ * git remote. Turned off (with a warning) when the workspace is not a clone with a remote.
+ */
+const resolveWorkspaceRepo = async (
+  root: string,
+  epicsRoot: string,
+  worktreeBase: string,
+  ws: Config['workspace'],
+  host: (project: string) => CodeHost,
+): Promise<{ readonly deps?: WorkspaceRepoDeps; readonly warning?: string }> => {
+  if (!ws.specMergeRequests) return {};
+  const off = (why: string) => ({ warning: `Spec MRs are off: ${why} (set workspace.specMergeRequests: false to silence this).` });
+  const top = await findRepoRoot(root);
+  if (!top.ok) return off('the workspace is not a git repository');
+  const epicsPath = relative(top.value, epicsRoot).split(sep).join('/');
+  if (!epicsPath || epicsPath.startsWith('..') || isAbsolute(epicsPath)) return off(`the epics folder (${epicsRoot}) is not inside the workspace repo`);
+  const url = (await exec('git', ['remote', 'get-url', ws.remote], top.value)).stdout.trim();
+  const project = ws.project ?? (url ? parseRemote(url)?.project : undefined);
+  if (!project) return off(`no GitLab project for the workspace (no "${ws.remote}" remote; set workspace.project)`);
+  const head = ws.baseBranch ? '' : (await exec('git', ['symbolic-ref', '--short', `refs/remotes/${ws.remote}/HEAD`], top.value)).stdout.trim();
+  const baseBranch = ws.baseBranch ?? (head ? head.replace(`${ws.remote}/`, '') : 'main');
+  return {
+    deps: {
+      project,
+      remote: ws.remote,
+      baseBranch,
+      epicsPath,
+      vcs: gitVcs({ repoRoot: top.value, worktreeRoot: join(worktreeBase, '_workspace'), remote: ws.remote, baseBranch }),
+      host: host(project),
+    },
+  };
 };
 
 export type ComposeOptions = {
@@ -106,6 +140,8 @@ export const composeDeps = async (root: string, sinks: Sinks, options: ComposeOp
   }
 
   const epicsRoot = expand(root, config.epicsDir);
+  const workspaceRepo = await resolveWorkspaceRepo(root, epicsRoot, worktreeBase, config.workspace, gitlab.host);
+  if (workspaceRepo.warning) warnings.push(workspaceRepo.warning);
   return ok({
     warnings,
     epicsRoot,
@@ -120,6 +156,7 @@ export const composeDeps = async (root: string, sinks: Sinks, options: ComposeOp
       context: fsRepoContext(root),
       contextFor: (dir, opts) => fsRepoContext(dir, opts),
       repos,
+      workspaceRepo: workspaceRepo.deps,
       agent: claudeAgentRunner({
         effort: config.models.effort,
         allowedDomains: config.build.allowedDomains,

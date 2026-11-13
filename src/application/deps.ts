@@ -15,6 +15,18 @@ export type RepoDeps = {
   readonly host: CodeHost;
 };
 
+/** The workspace repo, for publishing specs as MRs. Absent when that is turned off or not possible. */
+export type WorkspaceRepoDeps = {
+  /** GitLab project path or id. */
+  readonly project: string;
+  readonly remote: string;
+  readonly baseBranch: string;
+  /** Where the epics folder is inside the repo, with forward slashes (e.g. "epics"). */
+  readonly epicsPath: string;
+  readonly vcs: Vcs;
+  readonly host: CodeHost;
+};
+
 export type Deps = {
   readonly config: Config;
   /** Who is acting: the human running forge. Agents act as "forge". */
@@ -30,6 +42,7 @@ export type Deps = {
   /** Instructions and rules of any directory: a repo snapshot, a change worktree. */
   readonly contextFor: (root: string, opts?: { readonly claudeMd?: boolean }) => RepoContext;
   readonly repos: Readonly<Record<string, RepoDeps>>;
+  readonly workspaceRepo?: WorkspaceRepoDeps;
   readonly agent: AgentRunner;
   readonly checks: CheckRunner;
   readonly clock: Clock;

@@ -19,6 +19,7 @@ import { approveChangeCode, runBuild, type BuildReport, type ChangeOutcome } fro
 import { emit, emitAsForge, loadEpic, type Deps } from './deps.ts';
 import { changesPrompt, changesSchema, extractJson, reviseChangePrompt } from './prompts.ts';
 import { planningRequest, preparePlanning, snapshotRecord } from './planning.ts';
+import { closeDroppedChangeSpecs, publishChangeSpecs } from './specReview.ts';
 import { docInputs } from './stages.ts';
 
 const DraftsSchema = z.object({
@@ -188,6 +189,8 @@ export const runChanges = async (deps: Deps, epic: Epic): Promise<Result<Changes
     else errors.push(r.error.message);
   }
 
+  // Each change spec to its own MR; MRs of changes a full redraft left out are closed.
+  if (drafted.length > 0 || revised.length > 0) await publishChangeSpecs(deps, epic.slug, [...new Set([...drafted, ...revised])]);
   return ok({ drafted, revised, errors });
 };
 
@@ -230,6 +233,8 @@ const approveSpec = async (deps: Deps, epic: Epic, changeId: string, note: strin
       message: `Cannot approve ${changeId}:\n${checked.error.map((i) => `  - ${i}`).join('\n')}\nEdit ${deps.artifacts.pathOf(epic.slug, changeFile(changeId))} or revise it.`,
     });
   await emit(deps, epic.slug, [{ type: 'ChangeSpecApproved', changeId, spec: checked.value, note }]);
+  // The MR gets the version that was approved, owner's edits included.
+  await publishChangeSpecs(deps, epic.slug, [changeId]);
   return ok({ kind: 'spec', changeId });
 };
 
@@ -307,6 +312,7 @@ export const dropChange = async (deps: Deps, slug: string, changeId: string, not
   const can = canDropChange(loaded.value, changeId);
   if (!can.ok) return can;
   await emit(deps, slug, [{ type: 'ChangeDropped', changeId, note }]);
+  await closeDroppedChangeSpecs(deps, slug);
   return ok(undefined);
 };
 

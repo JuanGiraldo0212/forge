@@ -28,7 +28,9 @@ export const ARTIFACT_FILE: Readonly<Record<GatedStage, string>> = {
   spec: 'epic-spec.md',
 };
 
-export const changeFile = (changeId: string): string => `changes/${changeId}.md`;
+export const IDEA_FILE = 'idea.md';
+
+export const changeFile =(changeId: string): string => `changes/${changeId}.md`;
 
 /**
  * `ready`: the stage agent may run. `awaiting_answers`: the agent paused with questions for the human.
@@ -114,6 +116,12 @@ export type ChangeStatus =
 
 export type MergeRequestRef = { readonly iid: number; readonly url: string };
 
+/**
+ * A spec document forge publishes as an MR on the workspace repo, for the team to review there: the epic spec,
+ * or one change spec.
+ */
+export type SpecReview = { readonly kind: 'epic' } | { readonly kind: 'change'; readonly changeId: string };
+
 export type ChangeState = {
   readonly id: string;
   readonly title: string;
@@ -187,6 +195,13 @@ export type Epic = {
   readonly costUsd: number;
   /** Chat threads with the epic's agents, by thread. */
   readonly chats: Readonly<Record<string, readonly ChatEntry[]>>;
+  /** The MR on the workspace repo holding the epic spec (the latest one). */
+  readonly specMergeRequest?: MergeRequestRef;
+  /**
+   * The MR on the workspace repo holding each change spec, by change id. Kept apart from `changes`: a change sent
+   * back and redrafted under the same id continues its open MR.
+   */
+  readonly changeSpecMergeRequests: Readonly<Record<string, MergeRequestRef>>;
 };
 
 type Cost = { readonly costUsd: number };
@@ -276,6 +291,10 @@ type EventBody =
   | ({ readonly type: 'MergeRequestOpened'; readonly iid: number; readonly url: string } & ChangeRef)
   | ({ readonly type: 'ReviewCommentsPosted'; readonly iid: number; readonly inline: number; readonly general: number } & ChangeRef)
   | ({ readonly type: 'ChangeMerged' } & ChangeRef)
+  /** Without `changeId`: the epic spec's MR. */
+  | { readonly type: 'SpecMergeRequestOpened'; readonly changeId?: string; readonly iid: number; readonly url: string }
+  /** The MR of a change spec that was dropped or left the plan was closed. */
+  | ({ readonly type: 'SpecMergeRequestClosed'; readonly iid: number } & ChangeRef)
   | { readonly type: 'EpicAbandoned'; readonly note: string }
   | {
       readonly type: 'ChatMessage';
@@ -538,6 +557,16 @@ const applyEvent = (e: Epic, ev: EpicEvent): Epic => {
       const next = updateChange(e, ev.changeId, (c) => ({ ...c, status: 'merged' }));
       return finished(next.changes) ? { ...next, stage: 'done' } : next;
     }
+    case 'SpecMergeRequestOpened': {
+      const mr = { iid: ev.iid, url: ev.url };
+      return ev.changeId === undefined
+        ? { ...e, specMergeRequest: mr }
+        : { ...e, changeSpecMergeRequests: { ...e.changeSpecMergeRequests, [ev.changeId]: mr } };
+    }
+    case 'SpecMergeRequestClosed': {
+      const { [ev.changeId]: _closed, ...rest } = e.changeSpecMergeRequests;
+      return { ...e, changeSpecMergeRequests: rest };
+    }
     case 'ChatMessage': {
       const entry: ChatEntry = { role: ev.role, text: ev.text, ...stamp, ...(ev.feedback ? { feedback: ev.feedback } : {}) };
       return addCost({ ...e, chats: { ...e.chats, [ev.thread]: [...(e.chats[ev.thread] ?? []), entry] } }, ev.costUsd);
@@ -566,6 +595,7 @@ export const replay = (events: readonly EpicEvent[]): Epic | undefined => {
     pastDialogs: {},
     costUsd: 0,
     chats: {},
+    changeSpecMergeRequests: {},
   };
   return rest.reduce((e, ev) => ({ ...applyEvent(e, ev), updatedAt: ev.at }), initial);
 };

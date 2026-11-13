@@ -117,6 +117,39 @@ can't be removed while unfinished changes still build in it.
 `epics/**/events.jsonl merge=union` to `.gitattributes`. If two people act on the same epic, git
 keeps both sides' events, and forge orders them by time.
 
+## Spec MRs on the workspace repo
+
+The team reviews the specs in GitLab, like code. Each time an agent writes the **epic spec**, forge pushes it,
+with the idea and requirements it builds on, to the branch `forge/<slug>/epic-spec` of the workspace repo and
+opens an MR (*Epic spec: …*). **Each change spec** gets its own branch and MR (`forge/<slug>/C1-spec`,
+*Change spec C1: … (epic title)*), holding only that spec, with its repo, its dependencies and a link to the
+epic spec MR. Every MR targets the workspace's base branch. The epic spec MR's link shows in the epic header,
+each change spec MR's in that change's bar.
+
+- **Each new version is a commit on the open MR**: a revision, a redraft, or the owner's own edits, which are
+  published when the epic spec or that change spec is approved. Redrafting one change touches only its MR.
+- **A change that is dropped, or that a redraft of the whole set leaves out, has its MR closed.** A change sent
+  back and redrafted under the same id continues its open MR.
+- **Once an MR is merged or closed**, the next version starts over from the base branch in a new MR.
+- **Same sign-in as code MRs**: the glab login or the token (`gitlab.auth`). Forge pushes with the machine's
+  git credentials, from a worktree of the workspace repo under `~/.forge/worktrees/<workspace>/_workspace`,
+  so your checkout of the workspace is never touched. The event log is not part of the MRs.
+- **Best effort**: if pushing or opening the MR fails, forge logs why and the stage goes on as usual. The next
+  version tries again.
+- **Decisions still happen in forge.** Comments on the MR are not read by forge; bring what matters back to the
+  epic as revision feedback.
+
+The GitLab project and base branch come from the workspace's `origin` remote. Set them, or turn spec MRs off,
+in `.forge/config.yaml`:
+
+```yaml
+workspace:
+  specMergeRequests: true   # default
+  project: team/planning    # default: from the remote's URL
+  baseBranch: main          # default: the remote's HEAD, else main
+  remote: origin
+```
+
 ## How agents see the repos
 
 - **Planning agents** (requirements, epic spec, change specs) run from the planning repo and only read.
@@ -329,7 +362,7 @@ running total, so forge records only what each run added.
 
 ## Verified
 
-- `npm run check`: typecheck plus 97 tests, covering:
+- `npm run check`: typecheck plus 134 tests, covering:
   - the domain rules: lifecycle, change specs, cross-repo dependencies, cost;
   - end-to-end runs with real git and bare remotes:
     - a two-repo epic: per-change approval, a single redraft, a dropped change, a cross-repo
@@ -352,7 +385,11 @@ running total, so forge records only what each run added.
   - GitLab sign-in: the glab adapter against a scripted glab (same JSON body as the REST adapter, on
     stdin; missing, signed-out, expired and unreachable cases), the `gitlab.auth` default and the
     `local.yaml` override, composition picking the adapter, and the settings switch locally and
-    through the SSH server.
+    through the SSH server;
+  - spec MRs against a real bare workspace remote: one MR for the epic spec and one per change spec, a commit
+    per revision and for the owner's edits at approval, a single-change redraft touching only its MR, closing
+    the MRs of dropped and replanned-away changes, a fresh MR after a merge, a failed MR not failing the
+    stage, and finding the workspace's project from its remote.
 - Desktop app, driven in a real Electron window (dev and packaged builds) on the live demo:
   - every view renders;
   - an XSS probe stays inert: no script ran, and the `onerror` and `javascript:` link were stripped;
@@ -365,7 +402,9 @@ running total, so forge records only what each run added.
 
 ## Not yet
 
-- A second approver for high-risk epic specs; for now, review the epic spec in an MR on the planning repo.
+- A second approver for high-risk epic specs; for now, the team reviews the epic spec in its MR on the
+  workspace repo, and the owner approves in forge.
+- Reading comments from the spec MRs back into forge as revision feedback.
 - A GitHub code host adapter (only GitLab today).
 - Reviewers from a different model family, and several specialized reviewers.
 - A retro stage that turns escalations and findings into proposed rule files.

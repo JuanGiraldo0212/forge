@@ -32,6 +32,7 @@ const epic = (patch: Partial<Epic> = {}): Epic => ({
   pastDialogs: {},
   costUsd: 0,
   chats: {},
+  changeSpecMergeRequests: {},
   ...patch,
 });
 

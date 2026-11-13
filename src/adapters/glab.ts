@@ -125,6 +125,11 @@ export const glabCodeHost = (opts: { readonly baseUrl: string; readonly project:
       return r.ok ? ok(toMergeRequestState(r.value)) : r;
     },
 
+    closeMergeRequest: async (iid) => {
+      const r = await request('PUT', `/merge_requests/${iid}`, { state_event: 'close' });
+      return r.ok ? ok(undefined) : r;
+    },
+
     commentOnMergeRequest: (iid, headSha, comments) => commentOnMergeRequest(request, iid, headSha, comments, opts.diffWait),
   };
 };

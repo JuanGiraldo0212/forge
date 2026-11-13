@@ -46,11 +46,18 @@ export const fakeGitLab = (
   readonly opened: { title: string; description: string; sourceBranch: string }[];
   readonly merged: Set<number>;
   readonly commented: PostedReview[];
+  readonly closed: Set<number>;
 } => {
   const opened: { title: string; description: string; sourceBranch: string }[] = [];
   const merged = new Set<number>();
   const commented: PostedReview[] = [];
+  const closed = new Set<number>();
   return {
+    closed,
+    closeMergeRequest: async (iid) => {
+      closed.add(iid);
+      return ok(undefined);
+    },
     opened,
     merged,
     commented,
@@ -64,7 +71,7 @@ export const fakeGitLab = (
       return ok({ iid: opened.length, url: `https://gitlab.example/${project}/-/merge_requests/${opened.length}` });
     },
     getMergeRequest: async (iid): Promise<Result<any, any>> =>
-      ok({ state: merged.has(iid) ? 'merged' : 'opened', pipeline: 'success', url: `https://gitlab.example/${project}/-/merge_requests/${iid}` }),
+      ok({ state: merged.has(iid) ? 'merged' : closed.has(iid) ? 'closed' : 'opened', pipeline: 'success', url: `https://gitlab.example/${project}/-/merge_requests/${iid}` }),
   };
 };
 
