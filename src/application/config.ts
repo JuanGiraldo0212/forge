@@ -96,6 +96,21 @@ export const ConfigSchema = z.object({
       auth: z.enum(GITLAB_AUTH_MODES).default('token'),
     })
     .prefault({}),
+  /** The workspace (planning) repo itself: where the epics are committed and their specs are reviewed. */
+  workspace: z
+    .object({
+      /**
+       * Open an MR on the workspace repo with the epic spec, and another with the change specs, each time an
+       * agent writes them (a revision adds a commit to the open MR). Uses the same GitLab sign-in as code MRs.
+       */
+      specMergeRequests: z.boolean().default(true),
+      /** GitLab project of the workspace repo. Detected from the git remote when left out. */
+      project: z.string().min(1).optional(),
+      /** Branch the spec MRs target. Detected from the remote's HEAD when left out, else "main". */
+      baseBranch: z.string().min(1).optional(),
+      remote: z.string().default('origin'),
+    })
+    .prefault({}),
   /** Code repos an epic can change. Each change spec names exactly one. */
   repos: z
     .record(z.string().regex(/^[a-z0-9][a-z0-9_-]*$/, 'repo names are lowercase, digits, "-" or "_"'), RepoSchema)

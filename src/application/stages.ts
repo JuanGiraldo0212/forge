@@ -1,7 +1,7 @@
 /**
  * Epic creation, the single-document stages (requirements, epic spec) and their gates.
  */
-import { ARTIFACT_FILE, openQuestions, type AskedQuestion, type DocStage, type Epic, type GatedStage, type Question } from '../domain/epic.ts';
+import { ARTIFACT_FILE, IDEA_FILE, openQuestions, type AskedQuestion, type DocStage, type Epic, type GatedStage, type Question } from '../domain/epic.ts';
 import { canAnswer, canSendBack, openGate, runnableStage, type DomainError } from '../domain/lifecycle.ts';
 import { runCost } from '../domain/policy.ts';
 import { err, ok, type Result } from '../domain/result.ts';
@@ -9,8 +9,9 @@ import { lintRequirements, lintSpec } from '../domain/spec.ts';
 import { emit, emitAsForge, loadEpic, type Deps } from './deps.ts';
 import { planningRequest, preparePlanning, snapshotRecord, type PlanningView } from './planning.ts';
 import { continuePrompt, extractMarkdown, requirementsPrompt, specPrompt, type DocInputs } from './prompts.ts';
+import { publishEpicSpec } from './specReview.ts';
 
-export const IDEA_FILE = 'idea.md';
+export { IDEA_FILE };
 export const CHANGES_DIR = 'changes';
 
 const slugify = (title: string): string =>
@@ -143,6 +144,7 @@ export const runGatedStage = async (deps: Deps, epic: Epic, stage: GatedStage): 
       ...(interactive ? { sessionId: result.value.sessionId, sessionCostUsd: result.value.sessionCostUsd } : {}),
     },
   ]);
+  if (stage === 'spec') await publishEpicSpec(deps, epic.slug);
 
   return ok({
     kind: 'artifact',
@@ -198,6 +200,8 @@ export const approveStage = async (deps: Deps, slug: string, note: string | unde
       message: `Cannot approve ${gate.value}:\n${issues.map((i) => `  - ${i}`).join('\n')}\nEdit ${deps.artifacts.pathOf(slug, ARTIFACT_FILE[gate.value])} or revise it.`,
     });
   await emit(deps, slug, [{ type: 'GateApproved', stage: gate.value, note }]);
+  // The MR gets the version that was approved, owner's edits included.
+  if (gate.value === 'spec') await publishEpicSpec(deps, slug);
   return ok(gate.value);
 };
 

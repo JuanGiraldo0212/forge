@@ -2,7 +2,7 @@
  * The selected epic: header with stage stepper (which also picks the stage shown) and epic-level actions,
  * the change list, and the selected change's status bar.
  */
-import { STAGE_LABEL, type ChangeState, type DocStage, type Epic, type Stage } from '../../../domain/epic.ts';
+import { STAGE_LABEL, type ChangeState, type MergeRequestRef, type DocStage, type Epic, type Stage } from '../../../domain/epic.ts';
 import { canView, changeActions, changeHint, epicActions, epicHint, needsHuman, stepState, type ActionSpec } from '../model.ts';
 import { ActionButtons, Avatar, Chip, Spinner, StatusPill } from './ui.tsx';
 
@@ -26,6 +26,19 @@ export const Stepper = ({ epic, busy, view, onView }: { epic: Epic; busy: boolea
   </ol>
 );
 
+const MrLink = ({ mr, label, title, onOpenUrl }: { mr: MergeRequestRef; label: string; title?: string; onOpenUrl: (url: string) => void }) => (
+  <a
+    href={mr.url}
+    title={title}
+    onClick={(e) => {
+      e.preventDefault();
+      onOpenUrl(mr.url);
+    }}
+  >
+    {label} !{mr.iid} ↗
+  </a>
+);
+
 export const EpicHeader = ({
   epic,
   busy,
@@ -34,6 +47,7 @@ export const EpicHeader = ({
   onView,
   onAction,
   onAssign,
+  onOpenUrl,
 }: {
   epic: Epic;
   busy: boolean;
@@ -42,6 +56,7 @@ export const EpicHeader = ({
   onView: (stage: DocStage) => void;
   onAction: (a: ActionSpec) => void;
   onAssign: () => void;
+  onOpenUrl: (url: string) => void;
 }) => (
   <header className="epic-header">
     <div className="epic-heading">
@@ -54,6 +69,9 @@ export const EpicHeader = ({
         <span className="muted" title="Agent SDK estimate, not a bill">
           ~${epic.costUsd.toFixed(2)}
         </span>
+        {epic.specMergeRequest && (
+          <MrLink mr={epic.specMergeRequest} label="Epic spec MR" title="The epic spec, for review on the workspace repo" onOpenUrl={onOpenUrl} />
+        )}
       </div>
     </div>
     <Stepper epic={epic} busy={busy} view={view} onView={onView} />
@@ -97,6 +115,7 @@ export const ChangeList = ({ epic, selected, onSelect }: { epic: Epic; selected:
 /** `readOnly`: an earlier stage being looked back at; its decisions are made, so it offers no actions. */
 export const ChangeBar = ({
   change,
+  specMergeRequest,
   stage,
   readOnly,
   busy,
@@ -104,6 +123,8 @@ export const ChangeBar = ({
   onOpenUrl,
 }: {
   change: ChangeState;
+  /** The change spec's MR on the workspace repo, if one was opened. */
+  specMergeRequest?: MergeRequestRef;
   stage: Stage;
   readOnly: boolean;
   busy: boolean;
@@ -116,17 +137,10 @@ export const ChangeBar = ({
       {change.spec && <Chip>{change.spec.repo}</Chip>}
       <StatusPill status={change.status} />
       <span>{changeHint(change, stage)}</span>
-      {change.mergeRequest && (
-        <a
-          href={change.mergeRequest.url}
-          onClick={(e) => {
-            e.preventDefault();
-            onOpenUrl(change.mergeRequest!.url);
-          }}
-        >
-          MR !{change.mergeRequest.iid} ↗
-        </a>
+      {specMergeRequest && (
+        <MrLink mr={specMergeRequest} label="Spec MR" title={`Change spec ${change.id}, for review on the workspace repo`} onOpenUrl={onOpenUrl} />
       )}
+      {change.mergeRequest && <MrLink mr={change.mergeRequest} label="MR" onOpenUrl={onOpenUrl} />}
     </div>
     {!readOnly && <ActionButtons actions={changeActions(change, busy)} onAction={onAction} />}
   </div>

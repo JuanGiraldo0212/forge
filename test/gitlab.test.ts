@@ -19,7 +19,7 @@ import { fileSettings } from '../src/desktop/main/settings.ts';
 import { gitlabAccessView } from '../src/desktop/renderer/model.ts';
 import type { GitlabAccess } from '../src/ports/index.ts';
 import type { Outcome } from '../src/ui/actions.ts';
-import { makeRepo, tempDir } from './helpers.ts';
+import { makeRepo, sh, tempDir } from './helpers.ts';
 
 type GlabCall = { readonly args: readonly string[]; readonly stdin?: string };
 
@@ -62,6 +62,26 @@ describe('glab code host', () => {
     });
     await rest.openMergeRequest(MR);
     assert.deepEqual(JSON.parse(post?.stdin ?? ''), restBody);
+  });
+
+  it('closes an MR with a PUT of state_event "close"', async () => {
+    const glab = scriptedGlab(() => exited(0, MR_JSON));
+    const host = glabCodeHost({ baseUrl: 'https://gitlab.example.com', project: 'g/api', run: glab });
+    assert.deepEqual(await host.closeMergeRequest(7), { ok: true, value: undefined });
+    const [put] = glab.calls;
+    assert.deepEqual(put?.args, [
+      'api',
+      '--hostname',
+      'gitlab.example.com',
+      '--method',
+      'PUT',
+      '--header',
+      'Content-Type: application/json',
+      '--input',
+      '-',
+      'projects/g%2Fapi/merge_requests/7',
+    ]);
+    assert.deepEqual(JSON.parse(put?.stdin ?? ''), { state_event: 'close' });
   });
 
   it('says what to do when glab is missing, signed out, or the API refuses', async () => {
@@ -146,6 +166,39 @@ describe('composition', () => {
     assert.ok((await deps.repos.api!.host.getMergeRequest(7)).ok);
     assert.deepEqual(await gitlabAccess(), { kind: 'ready', host: 'gitlab.example.com', user: 'jose' });
     assert.deepEqual(glab.calls.map((c) => c.args.at(-1)), ['projects/g%2Fapi/merge_requests/7', 'user']);
+  });
+
+  it('finds the workspace repo for spec MRs from its remote, and opens them with the same sign-in', async () => {
+    const dir = await tempDir();
+    const ws = await makeRepo(dir, 'planning');
+    await makeRepo(dir, 'api');
+    sh(ws.repo, 'remote', 'set-url', 'origin', 'git@gitlab.example.com:team/planning.git');
+    await writeConfigFiles(ws.repo, { config: CONFIG, local: 'gitlab:\n  auth: glab\n' });
+    const glab = scriptedGlab(() => exited(0, MR_JSON));
+    const composed = await composeDeps(ws.repo, { log: { info() {}, warn() {} } }, { glab });
+    assert.ok(composed.ok);
+    const repo = composed.value.deps.workspaceRepo;
+    assert.ok(repo);
+    assert.deepEqual({ project: repo.project, baseBranch: repo.baseBranch, epicsPath: repo.epicsPath }, { project: 'team/planning', baseBranch: 'main', epicsPath: 'epics' });
+    assert.ok((await repo.host.getMergeRequest(7)).ok);
+    assert.deepEqual(glab.calls.map((c) => c.args.at(-1)), ['projects/team%2Fplanning/merge_requests/7']);
+  });
+
+  it('turns spec MRs off, with a warning, when the workspace has no GitLab remote', async () => {
+    const dir = await tempDir();
+    const ws = await makeRepo(dir, 'planning');
+    await makeRepo(dir, 'api');
+    sh(ws.repo, 'remote', 'remove', 'origin');
+    await writeConfigFiles(ws.repo, { config: CONFIG, local: '' });
+    const composed = await composeDeps(ws.repo, { log: { info() {}, warn() {} } });
+    assert.ok(composed.ok);
+    assert.equal(composed.value.deps.workspaceRepo, undefined);
+    assert.match(composed.value.warnings.join('\n'), /Spec MRs are off: no GitLab project for the workspace/);
+
+    await writeConfigFiles(ws.repo, { config: `${CONFIG}workspace:\n  specMergeRequests: false\n`, local: '' });
+    const off = await composeDeps(ws.repo, { log: { info() {}, warn() {} } });
+    assert.ok(off.ok);
+    assert.deepEqual(off.value.warnings, []);
   });
 });
 

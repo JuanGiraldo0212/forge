@@ -88,6 +88,10 @@ export const describeEvent = (e: EpicEvent): string => {
       return `asked to rework ${e.changeId}: ${e.note}`;
     case 'MergeRequestOpened':
       return `${e.changeId} MR !${e.iid} ${e.url}`;
+    case 'SpecMergeRequestOpened':
+      return `${e.changeId ? `change spec ${e.changeId}` : 'epic spec'} MR !${e.iid} ${e.url}`;
+    case 'SpecMergeRequestClosed':
+      return `closed the MR of change spec ${e.changeId} (!${e.iid})`;
     case 'ReviewCommentsPosted':
       return `${e.changeId} review posted to MR !${e.iid} (${e.inline} inline, ${e.general} general)`;
     case 'ChangeMerged':

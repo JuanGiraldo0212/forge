@@ -112,7 +112,14 @@ export type Vcs = {
   readonly restoreFromBase: (wt: Worktree, base: string, files: readonly ChangedFile[]) => Promise<Result<void, PortError>>;
   /** Drops every uncommitted change in the worktree. */
   readonly discardChanges: (wt: Worktree) => Promise<Result<void, PortError>>;
-  readonly push: (wt: Worktree) => Promise<Result<void, PortError>>;
+  /** `force` replaces the remote branch (used when a branch starts over from the base). */
+  readonly push: (wt: Worktree, opts?: { readonly force?: boolean }) => Promise<Result<void, PortError>>;
+  /** Fetches the remote copy of `branch` (as <remote>/<branch>); false when the remote has no such branch. */
+  readonly fetchBranch: (branch: string) => Promise<boolean>;
+  /** Points the worktree's branch at `ref` and drops every local change. */
+  readonly resetTo: (wt: Worktree, ref: string) => Promise<Result<void, PortError>>;
+  /** Writes files into the worktree (paths relative to it). */
+  readonly writeFiles: (wt: Worktree, files: readonly { readonly path: string; readonly content: string }[]) => Promise<Result<void, PortError>>;
 };
 
 export type ChangedFile = {
@@ -147,6 +154,7 @@ export type CodeHost = {
     readonly description: string;
   }) => Promise<Result<{ readonly iid: number; readonly url: string }, PortError>>;
   readonly getMergeRequest: (iid: number) => Promise<Result<MergeRequestState, PortError>>;
+  readonly closeMergeRequest: (iid: number) => Promise<Result<void, PortError>>;
   /**
    * Posts comments on the MR as of `headSha` (the commit just pushed), so inline comments land on the
    * diff the reviewer actually saw. Never fails as a whole: comments that could not be posted are listed.

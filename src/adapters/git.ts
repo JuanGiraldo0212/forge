@@ -3,8 +3,8 @@
  * This process holds the git credentials; agents never push.
  */
 import { existsSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { err, ok, type Result } from '../domain/result.ts';
 import type { ChangedFile, PortError, Vcs, Worktree } from '../ports/index.ts';
 import { exec } from './process.ts';
@@ -14,6 +14,15 @@ const fail = (message: string): Result<never, PortError> => err({ port: 'git', m
 const git = async (cwd: string, args: readonly string[]): Promise<Result<string, PortError>> => {
   const r = await exec('git', args, cwd);
   return r.code === 0 ? ok(r.stdout) : fail(`git ${args.join(' ')}: ${r.stderr.trim() || `exit ${r.code}`}`);
+};
+
+/** "git@host:group/sub/proj.git", "ssh://git@host:2222/group/proj.git", "https://host/group/proj" → host + project path. */
+export const parseRemote = (url: string): { readonly host: string; readonly project: string } | undefined => {
+  const u = url.trim();
+  const scp = u.match(/^[^@/\s]+@([^:/\s]+):(?!\/)(.+?)(?:\.git)?\/?$/);
+  if (scp) return { host: scp[1]!, project: scp[2]! };
+  const full = u.match(/^(?:ssh|https?|git):\/\/(?:[^@/]+@)?([^:/]+)(?::\d+)?\/(.+?)(?:\.git)?\/?$/);
+  return full ? { host: full[1]!, project: full[2]! } : undefined;
 };
 
 const STATUS: Readonly<Record<string, ChangedFile['status']>> = { A: 'added', M: 'modified', D: 'deleted', R: 'renamed' };
@@ -116,9 +125,34 @@ export const gitVcs = (opts: { readonly repoRoot: string; readonly worktreeRoot:
       return clean.ok ? ok(undefined) : clean;
     },
 
-    push: async (wt) => {
-      const r = await git(wt.path, ['push', '--quiet', '-u', remote, wt.branch]);
+    push: async (wt, pushOpts = {}) => {
+      const r = await git(wt.path, ['push', '--quiet', ...(pushOpts.force ? ['--force'] : []), '-u', remote, wt.branch]);
       return r.ok ? ok(undefined) : r;
+    },
+
+    fetchBranch: async (branch) => {
+      const r = await exec('git', ['fetch', '--quiet', remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`], repoRoot);
+      return r.code === 0;
+    },
+
+    resetTo: async (wt, ref) => {
+      const reset = await git(wt.path, ['reset', '--quiet', '--hard', ref]);
+      if (!reset.ok) return reset;
+      const clean = await git(wt.path, ['clean', '-fdq']);
+      return clean.ok ? ok(undefined) : clean;
+    },
+
+    writeFiles: async (wt, files) => {
+      try {
+        for (const f of files) {
+          const path = join(wt.path, f.path);
+          await mkdir(dirname(path), { recursive: true });
+          await writeFile(path, f.content);
+        }
+        return ok(undefined);
+      } catch (e) {
+        return fail(`writing files in ${wt.path}: ${(e as Error).message}`);
+      }
     },
   };
 };
