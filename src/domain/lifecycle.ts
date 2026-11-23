@@ -121,6 +121,38 @@ export const canDropChange = (e: Epic, changeId: string): Result<ChangeState, Do
     : c;
 };
 
+/**
+ * The owner sets a review finding aside (it is not raised again and no longer holds the gate) or opens it again.
+ * Not while an agent works on the change: its loop would not see the change of mind.
+ */
+export const canSetFinding = (
+  e: Epic,
+  changeId: string,
+  findingId: string,
+  action: 'dismiss' | 'reopen',
+): Result<ChangeState, DomainError> => {
+  const l = live(e);
+  if (!l.ok) return l;
+  const c = findChange(e, changeId);
+  if (!c.ok) return c;
+  if (c.value.status === 'running') return fail('already_running', `${changeId} is being built. Wait for it to finish.`);
+  const f = c.value.findings.find((x) => x.id === findingId);
+  if (!f) return fail('unknown_finding', `${changeId} has no finding "${findingId}".`);
+  if (action === 'dismiss' && f.status === 'invalid') return fail('dismissed', `${findingId} is already dismissed.`);
+  if (action === 'reopen' && (f.status === undefined || f.status === 'open'))
+    return fail('open', `${findingId} is already open.`);
+  return c;
+};
+
+/** An escalated change whose MR is (as far as forge knows) still open can go back to being watched as it is. */
+export const canResumeWatch = (e: Epic, changeId: string): Result<ChangeState, DomainError> => {
+  const l = live(e);
+  if (!l.ok) return l;
+  const c = inStatus(e, changeId, ['escalated'], 'resume watching');
+  if (!c.ok) return c;
+  return c.value.mergeRequest ? c : fail('no_mr', `${changeId} has no MR to watch.`);
+};
+
 /** Changes approved by the review gate but without an MR yet (e.g. a push failed last time). */
 export const changesNeedingMergeRequest = (e: Epic): readonly ChangeState[] =>
   e.changes.filter((c) => c.status === 'approved');

@@ -19,6 +19,7 @@ export type ActionId =
   | 'back'
   | 'abandon'
   | 'sync'
+  | 'resume-watch'
   | 'assign'
   | 'answer';
 
@@ -280,9 +281,20 @@ export const changeActions = (c: ChangeState, busy: boolean): readonly ActionSpe
         { id: 'approve', label: 'Approve code & open MR', kind: 'primary', changeId: id, note: note(`Approve ${id}'s code`, 'Note (optional)', false, 'Approve and open MR') },
       ];
     case 'escalated':
-      return [drop];
+      // Dropping needs the MR closed first; a held MR can instead go back to being watched as it is.
+      return c.mergeRequest
+        ? [
+            {
+              id: 'resume-watch',
+              label: 'Resume watching MR',
+              kind: 'secondary',
+              changeId: id,
+              note: note(`Hand ${id}'s MR back to forge as it is?`, 'Note (optional)', false, 'Resume watching'),
+            },
+          ]
+        : [drop];
     case 'mr_open':
-      return [{ id: 'sync', label: 'Sync MR', kind: 'secondary' }];
+      return [{ id: 'sync', label: 'Check MR now', kind: 'secondary' }];
     case 'ready':
     case 'revising':
       return [drop];
@@ -309,7 +321,9 @@ export const changeHint = (c: ChangeState, stage: Stage = 'development'): string
     case 'approved':
       return 'Code approved. The MR opens on the next run (the last attempt failed).';
     case 'mr_open':
-      return 'MR open. Merge it in GitLab, then sync. Ask for rework in the chat: it is pushed to this MR.';
+      return c.foreignHead && c.foreignHead !== c.commit
+        ? 'MR open, with commits forge did not push: forge no longer fixes it on its own. Merge it in GitLab, or ask for rework in the chat.'
+        : "MR open. Forge watches it: threads that mention forge and failed pipelines are fixed and pushed here, and each thread gets an answer. Merge it in GitLab; forge notices. Ask for rework in the chat too.";
     case 'merged':
       return 'Merged.';
     case 'dropped':

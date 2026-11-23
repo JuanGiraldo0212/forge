@@ -91,7 +91,12 @@ const changeSpecText = async (deps: Deps, slug: string, c: ChangeState): Promise
 
 const findingsText = (c: ChangeState): string | undefined =>
   c.findings.length
-    ? c.findings.map((f) => `- [${f.severity}] ${f.file ? `${f.file}${f.line ? `:${f.line}` : ''}: ` : ''}${f.summary}${f.detail ? ` — ${f.detail}` : ''}`).join('\n')
+    ? c.findings
+        .map(
+          (f) =>
+            `- ${f.id ? `${f.id} ` : ''}[${f.severity}${f.status && f.status !== 'open' ? `, ${f.status.replace('_', ' ')}` : ''}] ${f.file ? `${f.file}${f.line ? `:${f.line}` : ''}: ` : ''}${f.summary}${f.detail ? ` — ${f.detail}` : ''}${f.note ? ` (${f.note})` : ''}`,
+        )
+        .join('\n')
     : undefined;
 
 const workspaceFor = async (deps: Deps, e: Epic, thread: ChatThread): Promise<Workspace> => {

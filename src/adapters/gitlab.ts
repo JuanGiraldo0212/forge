@@ -3,7 +3,16 @@
  * The request bodies and response decoding are shared with the glab adapter, so both send and read the same JSON.
  */
 import { err, ok, type Result } from '../domain/result.ts';
-import type { CodeHost, GitlabAccess, MergeRequestComment, MergeRequestState, PortError, PostedComments } from '../ports/index.ts';
+import type {
+  CodeHost,
+  GitlabAccess,
+  MergeRequestComment,
+  MergeRequestDiscussion,
+  MergeRequestNote,
+  MergeRequestState,
+  PortError,
+  PostedComments,
+} from '../ports/index.ts';
 
 type Fetch = typeof fetch;
 type NewMergeRequest = Parameters<CodeHost['openMergeRequest']>[0];
@@ -35,6 +44,70 @@ export const toMergeRequestState = (json: any): MergeRequestState => ({
   state: json.state,
   pipeline: json.head_pipeline?.status ?? undefined,
   url: json.web_url,
+  ...(json.sha ? { headSha: String(json.sha) } : {}),
+  ...(json.head_pipeline?.id ? { pipelineId: Number(json.head_pipeline.id), pipelineSha: String(json.head_pipeline.sha ?? '') } : {}),
+  ...(json.head_pipeline?.ref ? { pipelineRef: String(json.head_pipeline.ref) } : {}),
+});
+
+const toNote = (json: any): MergeRequestNote => ({
+  id: Number(json.id),
+  body: String(json.body ?? ''),
+  author: {
+    id: Number(json.author?.id ?? 0),
+    username: String(json.author?.username ?? ''),
+    bot: Boolean(json.author?.bot) || /\[bot\]$|_bot(_[0-9a-f]+)?$/i.test(String(json.author?.username ?? '')),
+  },
+  system: Boolean(json.system),
+  ...(json.position?.new_path ? { file: String(json.position.new_path) } : {}),
+  ...(json.position?.new_line ? { line: Number(json.position.new_line) } : {}),
+});
+
+export const toDiscussion = (json: any): MergeRequestDiscussion => {
+  const raw: any[] = Array.isArray(json.notes) ? json.notes : [];
+  const resolvable = raw.filter((n) => n.resolvable);
+  return { id: String(json.id), resolved: resolvable.length > 0 && resolvable.every((n) => n.resolved), notes: raw.map(toNote) };
+};
+
+const done = (r: Result<unknown, PortError>): Result<void, PortError> => (r.ok ? ok(undefined) : r);
+
+/** The review loop's calls on an open MR: its threads, its failed jobs, and who may ask forge for changes. Shared by both adapters. */
+export const reviewLoopCalls = (
+  request: ProjectRequest,
+): Pick<CodeHost, 'listDiscussions' | 'replyToDiscussion' | 'resolveDiscussion' | 'failedJobs' | 'commitParents' | 'jobLog' | 'accessLevel'> => ({
+  commitParents: async (sha) => {
+    const r = await request('GET', `/repository/commits/${encodeURIComponent(sha)}`);
+    return r.ok ? ok(Array.isArray(r.value?.parent_ids) ? r.value.parent_ids.map(String) : []) : r;
+  },
+  listDiscussions: async (iid) => {
+    const all: any[] = [];
+    for (let page = 1; page <= 20; page++) {
+      const r = await request('GET', `/merge_requests/${iid}/discussions?per_page=100&page=${page}`);
+      if (!r.ok) return r;
+      const batch: any[] = Array.isArray(r.value) ? r.value : [];
+      all.push(...batch);
+      if (batch.length < 100) break;
+    }
+    return ok(all.map(toDiscussion));
+  },
+  replyToDiscussion: async (iid, id, body) =>
+    done(await request('POST', `/merge_requests/${iid}/discussions/${encodeURIComponent(id)}/notes`, { body })),
+  resolveDiscussion: async (iid, id) =>
+    done(await request('PUT', `/merge_requests/${iid}/discussions/${encodeURIComponent(id)}`, { resolved: true })),
+  failedJobs: async (pipelineId) => {
+    const r = await request('GET', `/pipelines/${pipelineId}/jobs?scope%5B%5D=failed&per_page=100`);
+    if (!r.ok) return r;
+    const jobs: any[] = Array.isArray(r.value) ? r.value : [];
+    return ok(jobs.map((j) => ({ id: Number(j.id), name: String(j.name), allowFailure: Boolean(j.allow_failure) })));
+  },
+  jobLog: async (jobId) => {
+    const r = await request('GET', `/jobs/${jobId}/trace`, undefined, { text: true });
+    return r.ok ? ok(String(r.value ?? '')) : r;
+  },
+  accessLevel: async (userId) => {
+    const r = await request('GET', `/members/all/${userId}`);
+    if (r.ok) return ok(Number(r.value?.access_level ?? 0));
+    return /\b404\b/.test(r.error.message) ? ok(0) : r;
+  },
 });
 
 /** Token mode needs no network to know it can't work: the token is there or it isn't. */
@@ -42,7 +115,13 @@ export const tokenAccess = (opts: { readonly host: string; readonly tokenEnv: st
   opts.token ? { kind: 'ready', host: opts.host } : { kind: 'no_token', host: opts.host, tokenEnv: opts.tokenEnv };
 
 /** One project-relative REST call (e.g. "GET", "/merge_requests/7"), however the adapter signs it. */
-export type ProjectRequest = (method: string, path: string, body?: unknown) => Promise<Result<any, PortError>>;
+export type ProjectRequest = (
+  method: string,
+  path: string,
+  body?: unknown,
+  /** `text`: the answer is plain text (a job log), not JSON. */
+  opts?: { readonly text?: boolean },
+) => Promise<Result<any, PortError>>;
 
 /** GitLab computes an MR's diff asynchronously after a push; how long to wait for it. */
 export type DiffWait = { readonly attempts: number; readonly delayMs: number };
@@ -106,7 +185,7 @@ export const gitlabCodeHost = (opts: {
   const doFetch = opts.fetch ?? fetch;
   const api = `${opts.baseUrl.replace(/\/$/, '')}/api/v4/${projectPath(opts.project)}`;
 
-  const request: ProjectRequest = async (method, path, body) => {
+  const request: ProjectRequest = async (method, path, body, how) => {
     if (!opts.token) return fail('GitLab token is not set (see gitlab.tokenEnv in .forge/config.yaml)');
     try {
       const res = await doFetch(`${api}${path}`, {
@@ -116,6 +195,7 @@ export const gitlabCodeHost = (opts: {
       });
       const text = await res.text();
       if (!res.ok) return fail(`${method} ${path} -> ${res.status}: ${text.slice(0, 500)}`);
+      if (how?.text) return ok(text);
       return ok(text ? JSON.parse(text) : undefined);
     } catch (e) {
       return fail(`${method} ${path}: ${(e as Error).message}`);
@@ -139,5 +219,7 @@ export const gitlabCodeHost = (opts: {
     },
 
     commentOnMergeRequest: (iid, headSha, comments) => commentOnMergeRequest(request, iid, headSha, comments, opts.diffWait),
+
+    ...reviewLoopCalls(request),
   };
 };

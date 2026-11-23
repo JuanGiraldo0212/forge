@@ -1,7 +1,7 @@
 /**
  * Loop limits and gate policy. Pure.
  */
-import type { Finding, Risk } from './epic.ts';
+import { unresolved, type Finding, type Risk } from './epic.ts';
 
 export type LoopPolicy = { readonly maxRounds: number; readonly maxIdenticalFailures: number };
 
@@ -40,9 +40,14 @@ export const runCost = (reportedTotal: number, baseline: number | undefined): nu
 
 export type ReviewGatePolicy = 'always' | 'risk-based';
 
-/** `risk-based` skips the human review gate only for low/medium risk tasks with no blocking findings. */
+/**
+ * `risk-based` skips the human review gate only for low/medium risk tasks with no blocking finding left unsettled
+ * and no question for the owner. Findings the reviewer saw fixed, or that were dismissed, don't count.
+ */
 export const reviewGateRequired = (policy: ReviewGatePolicy, risk: Risk, findings: readonly Finding[]): boolean =>
-  policy === 'always' || risk === 'high' || findings.some((f) => f.severity === 'blocking');
+  policy === 'always' ||
+  risk === 'high' ||
+  findings.some((f) => unresolved(f) && (f.severity === 'blocking' || f.status === 'needs_input'));
 
 /** Kinds where a test must fail without the change. Refactors and chores should keep tests green either way. */
 export const needsRevertTest = (kind: string): boolean => kind === 'feature' || kind === 'fix';

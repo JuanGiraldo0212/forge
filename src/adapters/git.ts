@@ -135,6 +135,8 @@ export const gitVcs = (opts: { readonly repoRoot: string; readonly worktreeRoot:
       return r.code === 0;
     },
 
+    contains: async (wt, ref) => (await exec('git', ['merge-base', '--is-ancestor', ref, 'HEAD'], wt.path)).code === 0,
+
     resetTo: async (wt, ref) => {
       const reset = await git(wt.path, ['reset', '--quiet', '--hard', ref]);
       if (!reset.ok) return reset;

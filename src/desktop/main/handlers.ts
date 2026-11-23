@@ -31,6 +31,8 @@ import {
   runAction,
   sendBackAction,
   syncAction,
+  findingAction,
+  resumeWatchAction,
   type Outcome,
 } from '../../ui/actions.ts';
 import type { DocName, DocView, Method, RepoSettings, WorkspaceInfo } from '../shared/api.ts';
@@ -89,6 +91,8 @@ const ARGS = {
   assign: z.tuple([slug, z.string().trim().min(1).max(200)]),
   abandon: z.tuple([slug, text.min(1)]),
   sync: z.tuple([slug]),
+  resumeWatch: z.tuple([slug, changeId, text]),
+  finding: z.tuple([slug, changeId, z.string().regex(/^F\d{1,4}$/), z.enum(['dismiss', 'reopen']), text]),
   repoSettings: z.tuple([]),
   inspectRepo: z.tuple([z.string().max(4096).nullable(), z.string().max(4096).nullable()]),
   saveRepos: z.tuple([z.array(repoEdit).max(50), z.string().max(4096).nullable(), z.string().trim().max(2048).nullable().optional()]),
@@ -220,6 +224,8 @@ export const createHandlers = (ctx: HandlerContext) => {
     assign: (s, owner) => exclusive(s, (d) => assignAction(d, s, owner)),
     abandon: (s, note) => exclusive(s, (d) => abandonAction(d, s, note)),
     sync: (s) => exclusive(s, (d) => syncAction(d, s)),
+    resumeWatch: (s, id, note) => exclusive(s, (d) => resumeWatchAction(d, s, id, note)),
+    finding: (s, id, findingId, action, note) => exclusive(s, (d) => findingAction(d, s, id, findingId, action, note)),
 
     repoSettings: async (): Promise<RepoSettings | null> => {
       const sess = session();

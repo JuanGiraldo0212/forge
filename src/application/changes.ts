@@ -12,7 +12,15 @@ import {
   type ChangeDraft,
 } from '../domain/changes.ts';
 import { ARTIFACT_FILE, changeFile, type ApprovedChange, type ChangeState, type Epic } from '../domain/epic.ts';
-import { approvalTarget, canApproveChangeSet, canDropChange, canRevisePlan, revisionTarget, type DomainError } from '../domain/lifecycle.ts';
+import {
+  approvalTarget,
+  canApproveChangeSet,
+  canDropChange,
+  canRevisePlan,
+  canSetFinding,
+  revisionTarget,
+  type DomainError,
+} from '../domain/lifecycle.ts';
 import { plannedChanges } from '../domain/spec.ts';
 import { err, ok, type Result } from '../domain/result.ts';
 import { approveChangeCode, runBuild, type BuildReport, type ChangeOutcome } from './build.ts';
@@ -294,6 +302,25 @@ export const reviseChange = async (
       : { type: 'ChangeReworkRequested', changeId, note },
   ]);
   return ok(target.value.kind);
+};
+
+/** The owner dismisses a review finding (the reviewer won't raise it again) or reopens it. */
+export const setFinding = async (
+  deps: Deps,
+  slug: string,
+  changeId: string,
+  findingId: string,
+  action: 'dismiss' | 'reopen',
+  note: string | undefined,
+): Promise<Result<void, DomainError>> => {
+  const loaded = await loadEpic(deps, slug);
+  if (!loaded.ok) return loaded;
+  const can = canSetFinding(loaded.value, changeId, findingId, action);
+  if (!can.ok) return can;
+  await emit(deps, slug, [
+    action === 'dismiss' ? { type: 'FindingDismissed', changeId, findingId, ...(note ? { note } : {}) } : { type: 'FindingReopened', changeId, findingId },
+  ]);
+  return ok(undefined);
 };
 
 /** Feedback on the set as a whole ("split C2", "add a migration change"): redrafts every unapproved change. */

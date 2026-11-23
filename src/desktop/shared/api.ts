@@ -143,7 +143,12 @@ export type ForgeApi = {
   readonly drop: (slug: string, changeId: string, note: string) => Promise<Outcome>;
   readonly assign: (slug: string, owner: string) => Promise<Outcome>;
   readonly abandon: (slug: string, note: string) => Promise<Outcome>;
+  /** Checks the epic's open MRs now: merges, closes, and feedback for forge (reworked right away). */
   readonly sync: (slug: string) => Promise<Outcome>;
+  /** Hands an escalated change with an open MR back to the MR watcher as it is, without a rework. */
+  readonly resumeWatch: (slug: string, changeId: string, note: string) => Promise<Outcome>;
+  /** Dismisses a review finding (it is not raised again) or reopens it. */
+  readonly finding: (slug: string, changeId: string, findingId: string, action: 'dismiss' | 'reopen', note: string) => Promise<Outcome>;
 
   readonly repoSettings: () => Promise<RepoSettings | null>;
   /** Suggests settings for a folder; with null, asks the user to pick one. `workspaceRoot` is for a workspace being set up. */
@@ -216,6 +221,8 @@ export const METHODS = [
   'assign',
   'abandon',
   'sync',
+  'resumeWatch',
+  'finding',
   'repoSettings',
   'inspectRepo',
   'saveRepos',

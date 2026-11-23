@@ -169,6 +169,7 @@ const fakeSession = (deps: Deps): Session => {
       }
     },
     stop: (slug) => running.get(slug)?.abort(),
+    watchMergeRequests: async () => {},
     close: () => {},
   };
 };

@@ -116,6 +116,8 @@ export type Vcs = {
   readonly push: (wt: Worktree, opts?: { readonly force?: boolean }) => Promise<Result<void, PortError>>;
   /** Fetches the remote copy of `branch` (as <remote>/<branch>); false when the remote has no such branch. */
   readonly fetchBranch: (branch: string) => Promise<boolean>;
+  /** The worktree's HEAD already has every commit of `ref` (false when it doesn't, or `ref` is unknown). */
+  readonly contains: (wt: Worktree, ref: string) => Promise<boolean>;
   /** Points the worktree's branch at `ref` and drops every local change. */
   readonly resetTo: (wt: Worktree, ref: string) => Promise<Result<void, PortError>>;
   /** Writes files into the worktree (paths relative to it). */
@@ -131,9 +133,36 @@ export type ChangedFile = {
 
 export type MergeRequestState = {
   readonly state: 'opened' | 'merged' | 'closed' | 'locked';
+  /** Status of the head pipeline (success, failed, running…). */
   readonly pipeline?: string;
   readonly url: string;
+  /** The MR's head commit. */
+  readonly headSha?: string;
+  /** The head pipeline, the commit it ran on, and its ref (refs/merge-requests/<iid>/merge for merged results). */
+  readonly pipelineId?: number;
+  readonly pipelineSha?: string;
+  readonly pipelineRef?: string;
 };
+
+export type MergeRequestNote = {
+  readonly id: number;
+  readonly body: string;
+  readonly author: { readonly id: number; readonly username: string; readonly bot: boolean };
+  /** GitLab's own notes ("added 1 commit", "resolved all threads"). */
+  readonly system: boolean;
+  /** Where a diff note sits. */
+  readonly file?: string;
+  readonly line?: number;
+};
+
+export type MergeRequestDiscussion = {
+  readonly id: string;
+  /** Every resolvable note in it is resolved. */
+  readonly resolved: boolean;
+  readonly notes: readonly MergeRequestNote[];
+};
+
+export type PipelineJob = { readonly id: number; readonly name: string; readonly allowFailure: boolean };
 
 /** A comment on an MR. With `file` and `line` it goes on that line of the diff when the host can place it there. */
 export type MergeRequestComment = { readonly body: string; readonly file?: string; readonly line?: number };
@@ -164,6 +193,18 @@ export type CodeHost = {
     headSha: string,
     comments: readonly MergeRequestComment[],
   ) => Promise<PostedComments>;
+  /** The MR's threads, oldest first, each with its notes. */
+  readonly listDiscussions: (iid: number) => Promise<Result<readonly MergeRequestDiscussion[], PortError>>;
+  readonly replyToDiscussion: (iid: number, discussionId: string, body: string) => Promise<Result<void, PortError>>;
+  readonly resolveDiscussion: (iid: number, discussionId: string) => Promise<Result<void, PortError>>;
+  /** The jobs of a pipeline that failed. */
+  readonly failedJobs: (pipelineId: number) => Promise<Result<readonly PipelineJob[], PortError>>;
+  /** A commit's parents (to tell which head a merged results pipeline's merge commit was made from). */
+  readonly commitParents: (sha: string) => Promise<Result<readonly string[], PortError>>;
+  /** A job's log, as plain text. */
+  readonly jobLog: (jobId: number) => Promise<Result<string, PortError>>;
+  /** A user's access level on the project (GitLab's numbers: 30 is Developer); 0 when not a member. */
+  readonly accessLevel: (userId: number) => Promise<Result<number, PortError>>;
 };
 
 /**

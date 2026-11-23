@@ -2,7 +2,7 @@
  * Document viewer and editor: idea, requirements, epic spec, change spec, review, diff, history.
  */
 import { useEffect, useState, type MouseEvent } from 'react';
-import { stageDialog, type ChangeState, type DocStage, type Epic } from '../../../domain/epic.ts';
+import { stageDialog, type ChangeState, type DocStage, type Epic, type Finding, type FindingStatus } from '../../../domain/epic.ts';
 import type { DocName, DocView, HistoryEntry, Outcome } from '../../shared/api.ts';
 import { renderMarkdown, splitFrontmatter } from '../markdown.ts';
 import type { Tab } from '../model.ts';
@@ -65,7 +65,58 @@ const Issues = ({ issues }: { issues: readonly string[] }) =>
     </div>
   ) : null;
 
-const Review = ({ change, onOpenUrl }: { change: ChangeState; onOpenUrl: (url: string) => void }) => (
+const FINDING_STATUS: Readonly<Record<FindingStatus, { readonly label: string; readonly tone: 'good' | 'bad' | 'warn' | undefined }>> = {
+  open: { label: 'open', tone: undefined },
+  fixed: { label: 'fixed', tone: 'good' },
+  disputed: { label: 'disputed', tone: 'warn' },
+  needs_input: { label: 'needs your decision', tone: 'bad' },
+  invalid: { label: 'dismissed', tone: undefined },
+};
+
+/** One review finding: where it stands, the latest word on it, and the owner's dismiss/reopen. */
+const FindingRow = ({ f, onSet, busy }: { f: Finding; onSet?: (id: string, action: 'dismiss' | 'reopen') => void; busy: boolean }) => {
+  const status = f.status ?? 'open';
+  const settled = status === 'fixed' || status === 'invalid';
+  const action = status === 'invalid' ? 'reopen' : status === 'fixed' ? undefined : 'dismiss';
+  return (
+    <li className={`finding finding-${f.severity}${settled ? ' finding-settled' : ''}`}>
+      {f.id && <code>{f.id}</code>}
+      <Chip tone={f.severity === 'blocking' ? 'bad' : 'warn'}>{f.severity}</Chip>
+      {status !== 'open' && <Chip tone={FINDING_STATUS[status].tone}>{FINDING_STATUS[status].label}</Chip>}
+      {f.file && (
+        <code>
+          {f.file}
+          {f.line ? `:${f.line}` : ''}
+        </code>
+      )}
+      <span>{f.summary}</span>
+      {f.id && onSet && action && (
+        <Button
+          kind="ghost"
+          disabled={busy}
+          title={action === 'dismiss' ? 'Not a real problem: the reviewer will not raise it again' : 'Raise it again'}
+          onClick={() => onSet(f.id!, action)}
+        >
+          {action === 'dismiss' ? 'Dismiss' : 'Reopen'}
+        </Button>
+      )}
+      {f.detail && <p className="muted">{f.detail}</p>}
+      {f.note && <p className="finding-note">{f.note}</p>}
+    </li>
+  );
+};
+
+const Review = ({
+  change,
+  onOpenUrl,
+  onSetFinding,
+  busy,
+}: {
+  change: ChangeState;
+  onOpenUrl: (url: string) => void;
+  onSetFinding?: (id: string, action: 'dismiss' | 'reopen') => void;
+  busy: boolean;
+}) => (
   <div className="review">
     <dl className="facts">
       <div>
@@ -114,25 +165,39 @@ const Review = ({ change, onOpenUrl }: { change: ChangeState; onOpenUrl: (url: s
       )}
     </dl>
     {change.escalation && <div className="banner banner-bad">Escalated: {change.escalation}</div>}
+    {change.foreignHead && change.status === 'mr_open' && change.foreignHead !== change.commit && (
+      <div className="banner banner-info">
+        The MR has commits forge did not push ({change.foreignHead.slice(0, 8)}). Forge stopped fixing it on its own; ask for rework here to continue.
+      </div>
+    )}
     <h3>Findings</h3>
     {change.findings.length === 0 ? (
       <p className="muted">{change.branch ? 'No findings.' : 'Not reviewed yet.'}</p>
     ) : (
       <ul className="findings">
         {change.findings.map((f, i) => (
-          <li key={i} className={`finding finding-${f.severity}`}>
-            <Chip tone={f.severity === 'blocking' ? 'bad' : 'warn'}>{f.severity}</Chip>
-            {f.file && (
-              <code>
-                {f.file}
-                {f.line ? `:${f.line}` : ''}
-              </code>
-            )}
-            <span>{f.summary}</span>
-            {f.detail && <p className="muted">{f.detail}</p>}
-          </li>
+          <FindingRow key={f.id ?? i} f={f} onSet={change.status === 'running' ? undefined : onSetFinding} busy={busy} />
         ))}
       </ul>
+    )}
+    {change.mergeRequestFeedback && (
+      <>
+        <h3>{change.status === 'escalated' && !change.mergeRequestFeedback.responses ? 'MR feedback waiting for you' : 'MR feedback in progress'}</h3>
+        <ul>
+          {change.mergeRequestFeedback.items.map((item) => {
+            const r = change.mergeRequestFeedback?.responses?.find((x) => x.id === item.id);
+            return (
+              <li key={item.id}>
+                <Chip>{item.kind === 'ci' ? 'pipeline' : 'thread'}</Chip>{' '}
+                {item.kind === 'ci'
+                  ? `#${item.pipelineId} failed: ${item.jobs.map((j) => j.name).join(', ')}`
+                  : `${item.thread.at(-1)?.author ?? ''}: ${item.thread.at(-1)?.body.slice(0, 200) ?? ''}`}
+                {r && <p className="finding-note">{r.outcome.replace('_', ' ')}: {r.reply}</p>}
+              </li>
+            );
+          })}
+        </ul>
+      </>
     )}
     {(change.specFeedback.length > 0 || change.feedback.length > 0) && (
       <>
@@ -285,7 +350,14 @@ export const DocPanel = ({
           </>
         )}
         {tab === 'questions' && <QuestionsPanel key={`${epic.slug}:${view}`} epic={epic} dialog={view === 'requirements' || view === 'spec' ? stageDialog(epic, view) : undefined} busy={busy} onAnswered={onSaved} />}
-        {current?.kind === 'review' && tab !== 'questions' && change && <Review change={change} onOpenUrl={onOpenUrl} />}
+        {current?.kind === 'review' && tab !== 'questions' && change && (
+          <Review
+            change={change}
+            onOpenUrl={onOpenUrl}
+            busy={busy}
+            onSetFinding={async (id, action) => onSaved(await window.forge.finding(epic.slug, change.id, id, action, ''))}
+          />
+        )}
         {current?.kind === 'diff' && <Diff text={current.text} />}
         {current?.kind === 'history' && <History entries={current.entries} />}
       </div>
