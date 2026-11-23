@@ -432,10 +432,10 @@ describe('change specs stage', () => {
     await run(deps, slug);
     assert.equal(host.commented.length, 1);
 
-    // A rework updates the same MR, and its new (clean) review is posted there.
+    // A rework is pushed straight to the open MR, with no second approval, and its new (clean) review is posted there.
     assert.ok((await reviseChange(deps, slug, 'C1', 'wrap it in parentheses')).ok);
     await run(deps, slug);
-    assert.ok((await approveChange(deps, slug, 'C1', undefined)).ok);
+    assert.equal((await epicOf(deps, slug)).changes[0]!.status, 'mr_open');
     sh(app.repo, 'fetch', '-q', 'origin');
     assert.equal(host.opened.length, 1, 'the open MR is reused');
     assert.equal(host.commented.length, 2);

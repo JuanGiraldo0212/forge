@@ -157,6 +157,13 @@ const parseFindings = (structured: unknown, text: string): Result<readonly Findi
   return parsed.success ? ok(parsed.data.findings) : err('reviewer did not return valid findings JSON');
 };
 
+/** The change's MR is still open (a rework of code already approved). Not knowing counts as not open. */
+const hasOpenMergeRequest = async (repo: RepoDeps, change: ChangeState): Promise<boolean> => {
+  if (!change.mergeRequest) return false;
+  const state = await repo.host.getMergeRequest(change.mergeRequest.iid);
+  return state.ok && state.value.state === 'opened';
+};
+
 const review = async (
   ctx: Ctx,
   repo: RepoDeps,
@@ -194,7 +201,9 @@ const review = async (
       ? [{ severity: 'advisory' as const, summary: `Changed files outside the change spec: ${undeclared.join(', ')}` }]
       : []),
   ];
-  const gateRequired = reviewGateRequired(config.review.gate, change.spec.risk, findings);
+  // Once the MR is open the code was already approved: a rework goes straight to it, its review posted there.
+  const gateRequired =
+    !(await hasOpenMergeRequest(repo, change)) && reviewGateRequired(config.review.gate, change.spec.risk, findings);
   await emitAsForge(ctx.deps, ctx.slug, [
     {
       type: 'ChangeReviewed',
