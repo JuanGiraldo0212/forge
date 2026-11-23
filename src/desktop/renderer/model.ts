@@ -309,7 +309,7 @@ export const changeHint = (c: ChangeState, stage: Stage = 'development'): string
     case 'approved':
       return 'Code approved. The MR opens on the next run (the last attempt failed).';
     case 'mr_open':
-      return 'MR open. Merge it in GitLab, then sync. Ask for rework in the chat.';
+      return 'MR open. Merge it in GitLab, then sync. Ask for rework in the chat: it is pushed to this MR.';
     case 'merged':
       return 'Merged.';
     case 'dropped':
