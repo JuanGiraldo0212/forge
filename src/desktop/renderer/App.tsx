@@ -159,7 +159,9 @@ export const App = () => {
                   ? await api().drop(slug, a.changeId!, note)
                   : a.id === 'abandon'
                     ? await api().abandon(slug, note)
-                    : await api().sync(slug);
+                    : a.id === 'resume-watch'
+                      ? await api().resumeWatch(slug, a.changeId!, note)
+                      : await api().sync(slug);
     await show(outcome);
   };
 

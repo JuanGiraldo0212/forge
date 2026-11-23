@@ -16,9 +16,10 @@ idea ─► requirements ─[approve]─► epic spec (RFC) ─[approve]─► c
                                                       │  one per merge request, each in exactly one repo
                                                       ▼
   change specs:  draft ─[approve each]─► approved            (redraft or drop any one; approve the set when all are approved)
-  development:   build ──────────────────────────────[approve]─► MR ─► merge
-                 agent ⇄ repo checks (≤20 rounds / 3 identical failures)
-                 → commit → revert test → review agent
+  development:   build ──────────────────────────────[approve]─► MR ──────────────────────► merge
+                 agent ⇄ repo checks (≤20 rounds / 3 identical failures)      ▲  │ watched: threads that mention
+                 → commit → revert test → review agent                        │  │ forge, failed pipelines
+                 ⇄ author fixes the findings (≤3 rounds)                      └──┘ reworked, pushed, answered
 ```
 
 - **Epic**: has an **owner** (whoever creates it; `forge assign` changes it). The owner drives it through
@@ -136,7 +137,8 @@ each change spec MR's in that change's bar.
   so your checkout of the workspace is never touched. The event log is not part of the MRs.
 - **Best effort**: if pushing or opening the MR fails, forge logs why and the stage goes on as usual. The next
   version tries again.
-- **Decisions still happen in forge.** Comments on the MR are not read by forge; bring what matters back to the
+- **Decisions still happen in forge.** Comments on spec MRs are not read by forge (unlike code MRs; see
+  [the review loop](#the-review-loop)); bring what matters back to the
   epic as revision feedback.
 
 The GitLab project and base branch come from the workspace's `origin` remote. Set them, or turn spec MRs off,
@@ -338,6 +340,66 @@ append events.
   outside the spec are always flagged.
 - **MRs**: opened only after you approve the code. The forge process pushes; agents cannot.
 
+### The review loop
+
+Like Devin's review/auto-fix loop, the reviewer's findings go back to the author before you look, and an open MR is
+fixed while it waits. Unlike it, every round is counted and the state machine, not the agent, decides when to stop.
+
+**Before the code gate.** When the review finds something of a severity in `review.autofix.severities` (blocking, by
+default), the author gets another round in the same session: the findings, by id (`F1`, `F2`…). For each, it fixes the
+code, says why not (*disputed*), or says only you can decide (*needs your decision*). The checks and the revert test
+run again, then a **fresh** reviewer judges every earlier finding (open, fixed or invalid) and adds new ones. This
+repeats until nothing is left to fix, `review.autofix.maxRounds` (3) is reached, or a round leaves the same findings
+open. Then the gate opens as usual, with each finding's state and the latest word on it. Findings that are fixed or
+dismissed don't hold a `risk-based` gate; a question for you always does. Approving the code settles its open
+questions; asking for a rework answers them (the reviewer judges those findings again). On the *Review* tab you can
+**Dismiss** a finding (the reviewer won't raise it again) or **Reopen** it.
+
+**While the MR is open.** While the app (or the SSH server) runs, forge checks each open MR every
+`mergeRequests.pollSeconds` (120), or right away with **Check MR now**:
+- **Merged or closed MRs** are picked up; there is no need to sync by hand.
+- **Threads that mention forge** (`@forge`, by default): the thread goes to the change's agent. It works on it in its
+  session, the checks and a review run, the commit is pushed to the same MR, and forge answers in the thread: *Fixed
+  in `abc123`: …*, *Not changed: …*, or *Forge asked the epic's owner: …*. Only notes from project members with
+  Developer access or more count; anyone else's are ignored. With `respondTo: members`, every member's note counts,
+  mention or not.
+- **Failed pipelines** on forge's own commit: the failed jobs' log tails go to the agent, the fix is pushed, and forge
+  comments on the MR. Jobs allowed to fail don't count; `ciFix.jobs` limits it to some job names.
+- **No approval for these reworks**: you approved the code once, and every push is checked and reviewed. But anything
+  the agent says only you can decide escalates the change to you after the push, with the question.
+- **Limits hand new feedback to you instead** (the change is escalated and the MR says so): `maxAutoReworks` (5)
+  reworks, `maxSpendUsd` ($10) spent on them, `ciFix.maxRounds` (3) pipeline fixes, or the same pipeline failure
+  twice in a row (0 turns that kind of rework off). Ask for a rework, and the agent gets the held feedback with
+  yours; or use **Resume watching MR** to set the held feedback aside and leave the MR as it is. Either starts the
+  count again.
+- **Someone else pushes to the MR** (or rebases it in GitLab): forge stops fixing it on its own until you ask for a
+  rework, which builds on top of their commits.
+- **Forge never takes its own words as a request**: everything it posts carries a hidden `<!-- forge -->` mark, since it
+  posts with your GitLab sign-in. For the same reason, any line in what it posts that would be a GitLab quick action
+  (`/merge`, `/approve`…) is escaped: agent-written text can't act as you.
+- **The agent only reads what members wrote**: in a thread it picks up, notes from anyone without Developer access are
+  left out, and only notes by a member count as forge's own.
+- **Bots** are ignored unless listed in `comments.bots`; listed ones need no mention, but must be bot accounts with
+  Developer access (a project access token is).
+- **Merged results pipelines** count when their merge commit was made from forge's commit. Failures in child or
+  downstream pipelines are not read yet.
+
+```yaml
+review:
+  autofix: { severities: [blocking], maxRounds: 3 }   # severities: [] turns it off
+mergeRequests:
+  watch: true
+  pollSeconds: 120
+  ciFix: { enabled: true, maxRounds: 3, jobs: [] }      # jobs: [] means every failed job
+  comments: { respondTo: mention, mention: "@forge", bots: [], resolveThreads: false }
+  maxAutoReworks: 5
+  maxSpendUsd: 10
+```
+
+MR comments and CI logs are written outside forge, so they are untrusted input to a build agent. The agent is told to
+treat them as requests about its change only, the build sandbox and "only forge pushes" still hold, and the member
+check decides who can ask at all.
+
 ## Isolation (read before using on anything sensitive)
 
 Build agents get:
@@ -362,7 +424,7 @@ running total, so forge records only what each run added.
 
 ## Verified
 
-- `npm run check`: typecheck plus 134 tests, covering:
+- `npm run check`: typecheck plus 162 tests, covering:
   - the domain rules: lifecycle, change specs, cross-repo dependencies, cost;
   - end-to-end runs with real git and bare remotes:
     - a two-repo epic: per-change approval, a single redraft, a dropped change, a cross-repo
@@ -389,7 +451,16 @@ running total, so forge records only what each run added.
   - spec MRs against a real bare workspace remote: one MR for the epic spec and one per change spec, a commit
     per revision and for the owner's edits at approval, a single-change redraft touching only its MR, closing
     the MRs of dropped and replanned-away changes, a fresh MR after a merge, a failed MR not failing the
-    stage, and finding the workspace's project from its remote.
+    stage, and finding the workspace's project from its remote;
+  - the review loop: findings fixed in the author's session and confirmed by a fresh reviewer, the round limit and
+    the no-progress stop, a question for the owner holding a `risk-based` gate, an accepted dispute letting a change
+    through it, dismissing and reopening findings; on an open MR, a member's mention reworked, pushed and answered in
+    its thread (non-members, unmentioned notes and other bots ignored), allowlisted bots and resolving threads, only
+    members' words reaching the agent, a failed pipeline fixed and the same failure twice held for the owner, a
+    pipeline on an older commit ignored and a merged results pipeline matched by its parents, a foreign push pausing
+    the loop and a rework building on it, the rework limit and resuming as is, a question escalating after the push,
+    approval settling old questions, a stranded rework picked up again, escaped quick actions, and the new GitLab
+    calls through both adapters.
 - Desktop app, driven in a real Electron window (dev and packaged builds) on the live demo:
   - every view renders;
   - an XSS probe stays inert: no script ran, and the `onerror` and `javascript:` link were stripped;

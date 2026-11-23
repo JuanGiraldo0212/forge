@@ -5,7 +5,9 @@
 import { watch, type FSWatcher } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { basename } from 'node:path';
-import type { Deps } from '../../application/deps.ts';
+import { loadEpic, type Deps } from '../../application/deps.ts';
+import { watchesMergeRequests } from '../../application/watch.ts';
+import { syncAction } from '../../ui/actions.ts';
 import { composeDeps, findRepoRoot } from '../../app/compose.ts';
 import { err, ok, type Result } from '../../domain/result.ts';
 import { instanceHost } from '../../adapters/gitlab.ts';
@@ -27,8 +29,13 @@ export type Session = {
   readonly exclusive: <T>(slug: string, work: (deps: Deps) => Promise<T>) => Promise<Result<T, string>>;
   readonly stop: (slug: string) => void;
   readonly busy: () => readonly string[];
+  /** Looks at every epic's open MRs once (what the background watcher does on its own every few minutes). */
+  readonly watchMergeRequests: () => Promise<void>;
   readonly close: () => void;
 };
+
+/** The first look at open MRs after a workspace opens; later ones follow mergeRequests.pollSeconds. */
+const FIRST_WATCH_MS = 15_000;
 
 export const openSession = async (
   path: string,
@@ -56,8 +63,11 @@ export const openSession = async (
   if (!composed.ok) return composed;
   const { deps, warnings, epicsRoot, gitlabAccess } = composed.value;
 
-  const running = new Map<string, AbortController>();
-  const busy = () => [...running.keys()];
+  /** `settled` resolves once a quiet hold ends or announces itself; a person's action waits on it. */
+  type Hold = { readonly controller: AbortController; quiet: boolean; readonly settled: Promise<void> };
+  const running = new Map<string, Hold>();
+  // Quiet holds (the MR watcher just looking) don't show as busy.
+  const busy = () => [...running].filter(([, h]) => !h.quiet).map(([slug]) => slug);
 
   await mkdir(epicsRoot, { recursive: true });
   let timer: NodeJS.Timeout | undefined;
@@ -89,32 +99,81 @@ export const openSession = async (
     canStoreToken: settings.canStoreToken(),
   };
 
+  /**
+   * Holds the epic while `work` runs. A quiet hold (the MR watcher just looking) doesn't show the epic as busy
+   * until `announce` is called, when agents are about to start. A person's action that comes during a quiet hold
+   * waits for the look to end (a few API calls) instead of being refused; once the watcher starts a rework, the
+   * epic is busy as usual.
+   */
+  const hold = async <T>(slug: string, work: (deps: Deps, announce: () => void) => Promise<T>, quiet = false): Promise<Result<T, string>> => {
+    for (let held = running.get(slug); held; held = running.get(slug)) {
+      if (quiet || !held.quiet) return err(`"${slug}" is already running. Stop it or wait for it to finish.`);
+      await held.settled;
+    }
+    const controller = new AbortController();
+    let settle = () => {};
+    const entry: Hold = { controller, quiet, settled: new Promise<void>((resolve) => (settle = resolve)) };
+    running.set(slug, entry);
+    if (!quiet) events.busy(busy());
+    const announce = () => {
+      if (!entry.quiet) return;
+      entry.quiet = false;
+      settle();
+      events.busy(busy());
+    };
+    const scoped: Deps = { ...deps, agent: { run: (req) => deps.agent.run({ ...req, signal: controller.signal }) } };
+    try {
+      return ok(await work(scoped, announce));
+    } catch (e) {
+      return err((e as Error).message);
+    } finally {
+      const wasQuiet = entry.quiet;
+      running.delete(slug);
+      settle();
+      if (!wasQuiet) events.busy(busy());
+      events.epicsChanged();
+    }
+  };
+
+  // The MR watcher: while the workspace is open, open MRs are checked on their own. An epic someone is working on
+  // is skipped and looked at next time.
+  let watching = false;
+  const watchMergeRequests = async (): Promise<void> => {
+    if (watching) return;
+    watching = true;
+    try {
+      for (const slug of await deps.epics.list()) {
+        if (running.has(slug)) continue;
+        const epic = await loadEpic(deps, slug);
+        if (!epic.ok || !watchesMergeRequests(epic.value)) continue;
+        const r = await hold(slug, (d, announce) => syncAction(d, slug, announce), true);
+        if (!r.ok) console.warn(`[forge] watching the MRs of ${slug}: ${r.error}`);
+        else if (r.value.tone === 'error') console.warn(`[forge] watching the MRs of ${slug}: ${r.value.text}`);
+      }
+    } catch (e) {
+      console.warn(`[forge] watching MRs: ${(e as Error).message}`);
+    } finally {
+      watching = false;
+    }
+  };
+  const { watch: watchOn, pollSeconds } = deps.config.mergeRequests;
+  const firstWatch = watchOn ? setTimeout(() => void watchMergeRequests(), FIRST_WATCH_MS) : undefined;
+  const watchTimer = watchOn ? setInterval(() => void watchMergeRequests(), pollSeconds * 1000) : undefined;
+
   return ok({
     info,
     deps,
     gitlabAccess,
     busy,
-    exclusive: async (slug, work) => {
-      if (running.has(slug)) return err(`"${slug}" is already running. Stop it or wait for it to finish.`);
-      const controller = new AbortController();
-      running.set(slug, controller);
-      events.busy(busy());
-      const scoped: Deps = { ...deps, agent: { run: (req) => deps.agent.run({ ...req, signal: controller.signal }) } };
-      try {
-        return ok(await work(scoped));
-      } catch (e) {
-        return err((e as Error).message);
-      } finally {
-        running.delete(slug);
-        events.busy(busy());
-        events.epicsChanged();
-      }
-    },
-    stop: (slug) => running.get(slug)?.abort(),
+    exclusive: (slug, work) => hold(slug, (d) => work(d)),
+    stop: (slug) => running.get(slug)?.controller.abort(),
+    watchMergeRequests,
     close: () => {
-      for (const c of running.values()) c.abort();
+      for (const h of running.values()) h.controller.abort();
       watcher?.close();
       clearTimeout(timer);
+      clearTimeout(firstWatch);
+      clearInterval(watchTimer);
     },
   });
 };

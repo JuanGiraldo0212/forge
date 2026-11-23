@@ -7,7 +7,17 @@ import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { err, ok, type Result } from '../domain/result.ts';
 import type { CodeHost, GitlabAccess, PortError } from '../ports/index.ts';
-import { commentOnMergeRequest, instanceHost, mergeRequestBody, projectPath, toMergeRequestState, toOpenedMergeRequest, type DiffWait, type ProjectRequest } from './gitlab.ts';
+import {
+  commentOnMergeRequest,
+  instanceHost,
+  mergeRequestBody,
+  projectPath,
+  reviewLoopCalls,
+  toMergeRequestState,
+  toOpenedMergeRequest,
+  type DiffWait,
+  type ProjectRequest,
+} from './gitlab.ts';
 
 export type GlabResult =
   | { readonly kind: 'missing' }
@@ -104,12 +114,13 @@ export const glabCodeHost = (opts: { readonly baseUrl: string; readonly project:
   const host = instanceHost(opts.baseUrl);
   const project = projectPath(opts.project);
 
-  const request: ProjectRequest = async (method, path, body) => {
+  const request: ProjectRequest = async (method, path, body, how) => {
     const result = await opts.run(apiArgs(host, method, `${project}${path}`, body !== undefined), {
       stdin: body === undefined ? undefined : JSON.stringify(body),
     });
     const failure = glabFailure(result);
     if (failure) return err(portError(host, `${method} ${path}`, failure));
+    if (how?.text) return ok(result.kind === 'exited' ? result.stdout : '');
     const json = parseJson(result.kind === 'exited' ? result.stdout : '');
     return json.ok ? json : err({ port: 'gitlab', message: `${method} ${path}: ${json.error}` });
   };
@@ -131,6 +142,8 @@ export const glabCodeHost = (opts: { readonly baseUrl: string; readonly project:
     },
 
     commentOnMergeRequest: (iid, headSha, comments) => commentOnMergeRequest(request, iid, headSha, comments, opts.diffWait),
+
+    ...reviewLoopCalls(request),
   };
 };
 

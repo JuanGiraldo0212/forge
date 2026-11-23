@@ -82,6 +82,51 @@ export const ConfigSchema = z.object({
       gate: z.enum(['always', 'risk-based']).default('always'),
       /** Post the automated review's findings on the MR as comments, inline on the diff where possible. */
       postToMergeRequest: z.boolean().default(true),
+      /**
+       * The author fixes the reviewer's findings of these severities on its own, re-checked and re-reviewed each
+       * round, before the human gate (and before a rework is pushed to an open MR). An empty list turns it off.
+       */
+      autofix: z
+        .object({
+          severities: z.array(z.enum(['blocking', 'advisory'])).default(['blocking']),
+          maxRounds: z.number().int().min(0).default(3),
+        })
+        .prefault({}),
+    })
+    .prefault({}),
+  /** What forge does with an open MR while it waits to be merged: pick up threads that mention it, and failed pipelines. */
+  mergeRequests: z
+    .object({
+      /** Check open MRs while the app (or the SSH server) runs. Merges and closes are picked up too. */
+      watch: z.boolean().default(true),
+      pollSeconds: z.number().int().min(30).default(120),
+      /** Rework the MR when its latest pipeline (on forge's commit) fails. */
+      ciFix: z
+        .object({
+          enabled: z.boolean().default(true),
+          maxRounds: z.number().int().min(0).default(3),
+          /** Only these job names count (empty: every failed job that is not allowed to fail). */
+          jobs: z.array(z.string()).default([]),
+        })
+        .prefault({}),
+      comments: z
+        .object({
+          /**
+           * `mention`: only notes that mention forge (`mention`), from members with Developer access or more.
+           * `members`: every note from such members. `off`: comments are never read.
+           */
+          respondTo: z.enum(['mention', 'members', 'off']).default('mention'),
+          mention: z.string().min(2).default('@forge'),
+          /** Bot usernames whose notes forge acts on without a mention (linters, scanners). Other bots are ignored. */
+          bots: z.array(z.string()).default([]),
+          /** Resolve a thread once its request is fixed and pushed. Off by default: people resolve their own threads. */
+          resolveThreads: z.boolean().default(false),
+        })
+        .prefault({}),
+      /** Automatic reworks of one MR before new feedback waits for the owner. A human acting on the change resets it. */
+      maxAutoReworks: z.number().int().min(0).default(5),
+      /** What those automatic reworks may spend before new feedback waits for the owner. */
+      maxSpendUsd: z.number().min(0).default(10),
     })
     .prefault({}),
   gitlab: z

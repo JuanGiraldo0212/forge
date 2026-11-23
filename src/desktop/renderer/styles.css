@@ -370,6 +370,12 @@ a {
   background: var(--warn-soft);
 }
 
+.chip-good {
+  color: var(--good);
+  border-color: var(--good);
+  background: var(--good-soft);
+}
+
 .pill {
   font-size: 11px;
   font-weight: 600;
@@ -936,6 +942,19 @@ a {
 .finding p {
   flex-basis: 100%;
   margin: 2px 0 0;
+}
+
+.finding-settled {
+  opacity: 0.65;
+}
+
+.finding .btn {
+  margin-left: auto;
+}
+
+.finding-note {
+  font-style: italic;
+  color: var(--muted);
 }
 
 .diff {

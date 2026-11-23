@@ -2,9 +2,20 @@
  * User actions behind the desktop app's buttons. Each calls the use cases and returns a one-line outcome
  * to show the user. No rendering, no front-end state.
  */
-import { syncMergeRequests } from '../application/build.ts';
+import { resumeWatching } from '../application/build.ts';
 import { sendChat } from '../application/chat.ts';
-import { approveAllDrafts, approveChange, approveChangeSet, dropChange, reviseChange, revisePlan, runChanges, runDevelopment } from '../application/changes.ts';
+import {
+  approveAllDrafts,
+  approveChange,
+  approveChangeSet,
+  dropChange,
+  reviseChange,
+  revisePlan,
+  runChanges,
+  runDevelopment,
+  setFinding,
+} from '../application/changes.ts';
+import { watchMergeRequests } from '../application/watch.ts';
 import { loadEpic, type Deps } from '../application/deps.ts';
 import { abandon, answerQuestions, approveStage, assignOwner, createEpic, reviseStage, runGatedStage, runnable, sendBack } from '../application/stages.ts';
 import { STAGE_LABEL, type Epic } from '../domain/epic.ts';
@@ -155,12 +166,38 @@ export const assignAction = async (deps: Deps, slug: string, owner: string): Pro
 export const abandonAction = async (deps: Deps, slug: string, note: string): Promise<Outcome> =>
   fromResult(await abandon(deps, slug, note), () => `Abandoned "${slug}".`);
 
-export const syncAction = async (deps: Deps, slug: string): Promise<Outcome> => {
-  const rows = await syncMergeRequests(deps, slug);
-  if (!rows.ok) return failed(rows.error.message);
-  if (rows.value.length === 0) return done('No open MRs.', 'info');
-  return done(
-    rows.value.map((r) => ('error' in r ? `${r.changeId}: ${r.error}` : `${r.changeId}: ${r.state}${r.pipeline ? ` (${r.pipeline})` : ''}`)).join(' · '),
-    rows.value.some((r) => 'error' in r) ? 'error' : 'info',
-  );
+/** Checks the epic's open MRs: merges and closes, and feedback for forge (which it reworks right away). */
+export const syncAction = async (deps: Deps, slug: string, onBuild?: () => void): Promise<Outcome> => {
+  const r = await watchMergeRequests(deps, slug, { onBuild });
+  if (!r.ok) return failed(r.error.message);
+  const { rows, pickedUp, outcomes, buildError } = r.value;
+  if (rows.length === 0) return done('No open MRs.', 'info');
+  const picked = new Map(pickedUp.map((p) => [p.changeId, p]));
+  const built = new Map(outcomes.map((o) => [o.changeId, o]));
+  const parts = rows.map((row) => {
+    if ('error' in row) return `${row.changeId}: ${row.error}`;
+    const p = picked.get(row.changeId);
+    const o = built.get(row.changeId);
+    const feedback = p
+      ? `; ${p.items.length} new item${p.items.length > 1 ? 's' : ''} for forge${p.held ? ', waiting for you' : o ? `, reworked: ${o.result}` : ''}`
+      : '';
+    return `${row.changeId}: ${row.state}${row.pipeline ? ` (${row.pipeline})` : ''}${feedback}`;
+  });
+  const bad = rows.some((row) => 'error' in row) || outcomes.some((o) => o.result === 'failed' || o.result === 'escalated') || Boolean(buildError);
+  return done([...parts, buildError ?? ''].filter(Boolean).join(' · '), bad ? 'error' : 'info');
 };
+
+export const resumeWatchAction = async (deps: Deps, slug: string, changeId: string, note: string): Promise<Outcome> =>
+  fromResult(await resumeWatching(deps, slug, changeId, note.trim() || undefined), () => `${changeId}'s MR is watched again, as it is.`);
+
+export const findingAction = async (
+  deps: Deps,
+  slug: string,
+  changeId: string,
+  findingId: string,
+  action: 'dismiss' | 'reopen',
+  note: string,
+): Promise<Outcome> =>
+  fromResult(await setFinding(deps, slug, changeId, findingId, action, note.trim() || undefined), () =>
+    action === 'dismiss' ? `Dismissed ${findingId}: it won't be raised again.` : `Reopened ${findingId}.`,
+  );

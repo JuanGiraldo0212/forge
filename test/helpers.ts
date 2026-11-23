@@ -12,7 +12,15 @@ import { shellCheckRunner } from '../src/adapters/process.ts';
 import { parseConfig } from '../src/application/config.ts';
 import type { Deps, RepoDeps } from '../src/application/deps.ts';
 import { err, ok, type Result } from '../src/domain/result.ts';
-import type { AgentOutcome, AgentRequest, AgentRunner, CodeHost, MergeRequestComment } from '../src/ports/index.ts';
+import type {
+  AgentOutcome,
+  AgentRequest,
+  AgentRunner,
+  CodeHost,
+  MergeRequestComment,
+  MergeRequestDiscussion,
+  MergeRequestNote,
+} from '../src/ports/index.ts';
 
 /** Each agent call really spends this much. */
 export const CALL_COST = 0.01;
@@ -40,20 +48,64 @@ export const makeRepo = async (dir: string, name: string, files: Record<string, 
 
 export type PostedReview = { readonly iid: number; readonly headSha: string; readonly comments: readonly MergeRequestComment[] };
 
+/** A pipeline on an MR's head: its id, the commit it ran on, and its failed jobs with their logs. */
+export type FakePipeline = {
+  readonly id: number;
+  readonly sha?: string;
+  readonly ref?: string;
+  readonly status: string;
+  readonly jobs: readonly { readonly id: number; readonly name: string; readonly log: string; readonly allowFailure?: boolean }[];
+};
+
 export const fakeGitLab = (
   project: string,
+  /** The bare remote the MRs' branches are pushed to, so the MR head is the real pushed commit. */
+  remote?: string,
 ): CodeHost & {
   readonly opened: { title: string; description: string; sourceBranch: string }[];
   readonly merged: Set<number>;
   readonly commented: PostedReview[];
   readonly closed: Set<number>;
+  /** Threads by MR iid; tests add notes, forge's replies land here too. */
+  readonly discussions: Map<number, MergeRequestDiscussion[]>;
+  readonly replies: { iid: number; discussionId: string; body: string }[];
+  readonly resolved: string[];
+  /** Access level by user id (missing: not a member). */
+  readonly members: Map<number, number>;
+  /** The head pipeline by MR iid. Its sha defaults to the MR's head. */
+  readonly pipelines: Map<number, FakePipeline>;
+  /** Parents of merge commits (merged results pipelines run on them). */
+  readonly mergeCommits: Map<string, readonly string[]>;
 } => {
   const opened: { title: string; description: string; sourceBranch: string }[] = [];
   const merged = new Set<number>();
   const commented: PostedReview[] = [];
   const closed = new Set<number>();
+  const discussions = new Map<number, MergeRequestDiscussion[]>();
+  const replies: { iid: number; discussionId: string; body: string }[] = [];
+  const resolved: string[] = [];
+  const members = new Map<number, number>();
+  const pipelines = new Map<number, FakePipeline>();
+  const mergeCommits = new Map<string, readonly string[]>();
+  let noteId = 1000;
+  /** Like GitLab: the MR's head is whatever its source branch points at on the remote. */
+  const headOf = (iid: number): string | undefined => {
+    const branch = opened[iid - 1]?.sourceBranch;
+    if (!remote || !branch) return undefined;
+    try {
+      return sh(remote, 'rev-parse', `refs/heads/${branch}`);
+    } catch {
+      return undefined;
+    }
+  };
   return {
     closed,
+    discussions,
+    replies,
+    resolved,
+    members,
+    pipelines,
+    mergeCommits,
     closeMergeRequest: async (iid) => {
       closed.add(iid);
       return ok(undefined);
@@ -70,10 +122,54 @@ export const fakeGitLab = (
       opened.push(mr);
       return ok({ iid: opened.length, url: `https://gitlab.example/${project}/-/merge_requests/${opened.length}` });
     },
-    getMergeRequest: async (iid): Promise<Result<any, any>> =>
-      ok({ state: merged.has(iid) ? 'merged' : closed.has(iid) ? 'closed' : 'opened', pipeline: 'success', url: `https://gitlab.example/${project}/-/merge_requests/${iid}` }),
+    getMergeRequest: async (iid): Promise<Result<any, any>> => {
+      const p = pipelines.get(iid);
+      const head = headOf(iid);
+      return ok({
+        state: merged.has(iid) ? 'merged' : closed.has(iid) ? 'closed' : 'opened',
+        pipeline: p?.status ?? 'success',
+        url: `https://gitlab.example/${project}/-/merge_requests/${iid}`,
+        ...(head ? { headSha: head } : {}),
+        ...(p ? { pipelineId: p.id, pipelineSha: p.sha ?? head ?? '' } : {}),
+        ...(p?.ref ? { pipelineRef: p.ref } : {}),
+      });
+    },
+    listDiscussions: async (iid) => ok(discussions.get(iid) ?? []),
+    replyToDiscussion: async (iid, discussionId, body) => {
+      replies.push({ iid, discussionId, body });
+      const d = discussions.get(iid)?.find((x) => x.id === discussionId);
+      if (d) (d.notes as MergeRequestNote[]).push({ id: noteId++, body, author: { id: 1, username: 'owner', bot: false }, system: false });
+      return ok(undefined);
+    },
+    resolveDiscussion: async (_iid, discussionId) => {
+      resolved.push(discussionId);
+      return ok(undefined);
+    },
+    failedJobs: async (pipelineId) => {
+      const p = [...pipelines.values()].find((x) => x.id === pipelineId);
+      return ok((p?.jobs ?? []).map((j) => ({ id: j.id, name: j.name, allowFailure: Boolean(j.allowFailure) })));
+    },
+    commitParents: async (sha) => ok(mergeCommits.get(sha) ?? []),
+    jobLog: async (jobId) => {
+      const job = [...pipelines.values()].flatMap((p) => p.jobs).find((j) => j.id === jobId);
+      return ok(job?.log ?? '');
+    },
+    accessLevel: async (userId) => ok(members.get(userId) ?? 0),
   };
 };
+
+/** A thread on an MR with one note, for the fake GitLab. */
+export const thread = (
+  id: string,
+  noteId: number,
+  author: { readonly id: number; readonly username: string; readonly bot?: boolean },
+  body: string,
+  where: { readonly file?: string; readonly line?: number } = {},
+): MergeRequestDiscussion => ({
+  id,
+  resolved: false,
+  notes: [{ id: noteId, body, author: { bot: false, ...author }, system: false, ...where }],
+});
 
 export type Script = (
   req: AgentRequest,
@@ -151,7 +247,7 @@ export const makeDeps = async (opts: {
     repos: Object.fromEntries(opts.repos.map((r) => [r.name, { path: r.dir, project: `group/${r.name}`, checks: r.checks }])),
   });
   assert.ok(config.ok, JSON.stringify(config));
-  const hosts = Object.fromEntries(opts.repos.map((r) => [r.name, fakeGitLab(`group/${r.name}`)]));
+  const hosts = Object.fromEntries(opts.repos.map((r) => [r.name, fakeGitLab(`group/${r.name}`, sh(r.dir, 'remote', 'get-url', 'origin'))]));
   const repos: Record<string, RepoDeps> = Object.fromEntries(
     opts.repos.map((r) => [
       r.name,

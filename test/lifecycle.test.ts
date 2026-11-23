@@ -392,7 +392,9 @@ describe('change specs stage', () => {
       }
       if (stageOf(req) === 'review') {
         reviews++;
-        if (reviews > 1) return { structured: { findings: [] } };
+        // A later review judges the earlier findings: both are settled now.
+        if (reviews > 1)
+          return { structured: { findings: [], previous: [{ id: 'F1', status: 'fixed' }, { id: 'F2', status: 'invalid' }] } };
         return {
           structured: {
             findings: [
